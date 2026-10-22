@@ -128,7 +128,7 @@ permissions:
   contents: write
   pull-requests: none
   issues: none
-  packages: none
+  packages: read
   id-token: none
 concurrency:
   group: clixarena-video-${{ github.run_id }}
@@ -269,6 +269,7 @@ jobs:
     timeout-minutes: 300
     permissions:
       contents: read
+      packages: read
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -318,6 +319,7 @@ jobs:
     timeout-minutes: 125
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -357,6 +359,9 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 350
+    permissions:
+      contents: write
+      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

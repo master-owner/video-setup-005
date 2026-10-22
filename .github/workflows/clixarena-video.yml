@@ -128,7 +128,7 @@ permissions:
   contents: write
   pull-requests: none
   issues: none
-  packages: none
+  packages: read
   id-token: none
 concurrency:
   group: clixarena-video-${{ github.run_id }}
@@ -137,6 +137,11 @@ jobs:
   encode:
     name: Download, audio selection and preparation
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 350
     outputs:
       distributed: ${{ steps.video.outputs.distributed }}
@@ -146,8 +151,11 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Install media tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
+      - name: Verify pre-built environment
+        run: |
+          echo "Pre-built GHCR Container active: Zero download delay!"
+          ffmpeg -version | head -n 1
+          python3 -c "import pyrogram, tgcrypto, libtorrent; print('All libraries pre-installed and ready.')" 
       - name: Download, validate, encode and upload
         id: video
         env:
@@ -253,9 +261,15 @@ jobs:
     needs: encode
     if: ${{ needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 300
     permissions:
       contents: read
+      packages: read
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -266,8 +280,8 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Install FFmpeg
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core
+      - name: Verify pre-built FFmpeg
+        run: ffmpeg -version | head -n 1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: parallel-source-${{ matrix.chunk }}
@@ -297,20 +311,22 @@ jobs:
     needs: encode
     if: ${{ needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 125
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Install audio tools
-        run: |
-          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg
-          fi
+      - name: Verify pre-built audio tools
+        run: ffmpeg -version | head -n 1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: parallel-manifest
@@ -337,14 +353,24 @@ jobs:
     needs: [encode, chunks, companion]
     if: ${{ success() && needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 350
+    permissions:
+      contents: write
+      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Install media and mapping tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
+      - name: Verify pre-built media tools
+        run: |
+          ffmpeg -version | head -n 1
+          python3 -c "import pyrogram, tgcrypto, cryptography; print('Finalize tools ready.')" 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: parallel-encoded-*
