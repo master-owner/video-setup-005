@@ -918,7 +918,7 @@ def complete_upload_one(path, output_name, values, provider):
             api_id=values.get('TELEGRAM_API_ID') or os.getenv('TELEGRAM_API_ID','')
             api_hash=values.get('TELEGRAM_API_HASH') or os.getenv('TELEGRAM_API_HASH','')
             layout_cfg = json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}')
-            telegram_mode = layout_cfg.get('telegramMode', 'multi')
+            telegram_mode = layout_cfg.get('telegramMode', 'single')
             file_id, quality_ids = upload_telegram_multi(path,output_name,bot_token,chat_id,api_id,api_hash,mask,mode=telegram_mode)
         except HostError as error:raise DownloadError(str(error)) from None
         except Exception as e:raise DownloadError('Telegram upload failed: ' + str(e)) from None
@@ -975,7 +975,7 @@ def selected_runner_mode(layout,environment=None):
     # dispatch supplied "parallel" inside overlay_layout. UI selection wins.
     value=layout.get('runnerMode')
     if value is None or value=='':
-        value=(os.getenv('RUNNER_MODE','') if environment is None else environment) or 'single'
+        value=(os.getenv('RUNNER_MODE','') if environment is None else environment) or 'parallel'
     if not isinstance(value,str) or value.strip().lower() not in ('single','parallel'):
         raise ValueError('Choose single or parallel runner mode')
     return value.strip().lower()
@@ -987,6 +987,8 @@ def main():
     try:
         values = {name: os.getenv(name, '') for name in
                   ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'STREAMTAPE_LOGIN', 'STREAMTAPE_KEY','STREAMHG_API_KEY','ABYSS_API_KEY','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_API_ID','TELEGRAM_API_HASH')}
+        if not values['TELEGRAM_BOT_TOKEN'] and os.getenv('TELEGRAM_BOT_TOKENS'):
+            values['TELEGRAM_BOT_TOKEN'] = os.getenv('TELEGRAM_BOT_TOKENS').split(',')[0].strip()
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):

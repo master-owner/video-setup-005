@@ -146,7 +146,8 @@ def upload_streamhg(path,name,key,mask=lambda _:None,run=subprocess.run,validate
         response=run_upload(['curl','--config','-','--silent','--fail','--proto','=https',
             '--user-agent','Mozilla/5.0','--connect-timeout','30','--max-time','3600',
             '--write-out','\nCLIXARENA_HTTP:%{http_code}','--form',
-            'file=@"'+local+'";filename="'+filename+'"'],input=config,capture_output=True,text=True,timeout=3610,runner=run,label='StreamHG',size=file_size(path))
+            'file=@"'+local+'";filename="' + filename + '"'
+        ],input=config,capture_output=True,text=True,timeout=3610,runner=run,label='StreamHG',size=file_size(path))
     except subprocess.TimeoutExpired:
         raise HostError('StreamHG file upload: timed out. Upload state is uncertain; check the account before retrying.') from None
     except Exception:
@@ -178,7 +179,6 @@ def upload_streamhg(path,name,key,mask=lambda _:None,run=subprocess.run,validate
 
 
 def verify_streamhg(file_id,key,size,name,attempts=6,pause=time.sleep):
-    # Host transcoding changes sizes; verify the returned file ID and title.
     for attempt in range(attempts):
         try:
             rows=streamhg_api('file/info',key,{'file_code':file_id}).get('result')
@@ -209,7 +209,6 @@ def upload_abyss(path,name,key,mask=lambda _:None,run=subprocess.run):
 
 
 def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
-    # Read-only retries never repeat multipart upload; transcoding may still be waiting.
     url='https://api.abyss.to/v1/files/'+file_id+'?key='+urllib.parse.quote(key,safe='')
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
     for attempt in range(attempts):
@@ -388,30 +387,38 @@ def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, 
                 part_name = f"{base_name} - Part {i+1}.mp4"
                 parts_info.append((i, part_path, part_name))
 
-            # MULTI-BOT CONCURRENT ASYNCIO UPLOADING (ZERO THREADPOOL CRASH)
+            part_results = None
             use_pyrogram = any((file_size(p[1]) or 0) >= 50 * 1024 * 1024 for p in parts_info) and api_id and api_hash
-            if use_pyrogram:
-                if Client is None:
-                    raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
 
-                async def _upload_all_parts():
-                    tasks = []
-                    for i, (part_idx, part_path, part_name) in enumerate(parts_info):
-                        assigned_tok = bot_token_list[i % len(bot_token_list)]
-                        bot_label = f"Bot #{i % len(bot_token_list) + 1}" if len(bot_token_list) > 1 else "Telegram"
-                        print(f"[{bot_label}] Starting upload of part {i+1}/{num_parts}...", flush=True)
-                        tasks.append(_pyrogram_send_video(part_path, part_name, assigned_tok, chat_str, api_id, api_hash, bot_label=bot_label))
-                    return await asyncio.gather(*tasks)
+            # ATTEMPT 1: Multi-Bot Concurrent Upload via AsyncIO (if >= 2 bots configured)
+            if len(bot_token_list) > 1 and num_parts > 1 and use_pyrogram:
+                if Client is not None:
+                    try:
+                        print(f"Multi-Bot Speed Boost: Uploading {num_parts} parts concurrently across {min(num_parts, len(bot_token_list))} bots via AsyncIO...", flush=True)
 
-                print(f"Multi-Bot Speed Boost: Uploading {num_parts} parts concurrently across {min(num_parts, len(bot_token_list))} bots via AsyncIO...", flush=True)
-                part_results = asyncio.run(_upload_all_parts())
-            else:
+                        async def _upload_all_parts():
+                            tasks = []
+                            for i, (part_idx, part_path, part_name) in enumerate(parts_info):
+                                assigned_tok = bot_token_list[i % len(bot_token_list)]
+                                bot_label = f"Bot #{i % len(bot_token_list) + 1}"
+                                print(f"[{bot_label}] Starting upload of part {i+1}/{num_parts}...", flush=True)
+                                tasks.append(_pyrogram_send_video(part_path, part_name, assigned_tok, chat_str, api_id, api_hash, bot_label=bot_label))
+                            return await asyncio.gather(*tasks)
+
+                        part_results = asyncio.run(_upload_all_parts())
+                        print(f"Multi-Bot upload completed successfully for all {num_parts} parts!", flush=True)
+                    except Exception as multi_err:
+                        print(f"::warning::Multi-Bot concurrent upload encountered an issue ({multi_err}). Auto-falling back to Primary Bot sequential upload...", flush=True)
+                        part_results = None
+
+            # ATTEMPT 2: Primary Bot Sequential Upload (Fallback or Single-Bot default)
+            if part_results is None:
+                print(f"Uploading {num_parts} parts sequentially using Primary Bot...", flush=True)
                 part_results = []
                 for i, (part_idx, part_path, part_name) in enumerate(parts_info):
-                    assigned_tok = bot_token_list[i % len(bot_token_list)]
-                    bot_label = f"Bot #{i % len(bot_token_list) + 1}" if len(bot_token_list) > 1 else "Telegram"
-                    print(f"[{bot_label}] Starting upload of part {i+1}/{num_parts}...", flush=True)
-                    p_id = _curl_send_video(part_path, part_name, assigned_tok, chat_str, mask, run, file_size(part_path))
+                    bot_label = f"Primary Bot (Part {i+1}/{num_parts})"
+                    print(f"[{bot_label}] Starting upload...", flush=True)
+                    p_id = _upload_telegram_single(part_path, part_name, primary_token, chat_str, api_id, api_hash, mask, run, bot_label=bot_label)
                     part_results.append(p_id)
 
         combined_id = "-".join(part_results)
@@ -444,7 +451,6 @@ def transcode_resolution(input_path, output_path, target_height, run=subprocess.
     duration = get_media_duration(input_path, run=run)
     extra_flags = []
     if duration > 0:
-        # Budget total file for 1750MB (video + audio + container) to guarantee file stays well below Telegram 1950MB limit
         total_kbps = int((1750 * 8192) / duration)
         safe_video_kbps = max(250, total_kbps - 220)
         if target_height >= 1080:

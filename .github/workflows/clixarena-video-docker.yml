@@ -23,7 +23,7 @@ on:
       runner_mode:
         description: Single runner (direct, fast, no chunk transfer) or Parallel (4 runners)
         required: false
-        default: single
+        default: parallel
         type: choice
         options:
           - single
@@ -75,7 +75,7 @@ on:
       crf:
         description: CRF 0-51 (lower = higher quality/larger file); auto uses High 18 or Balanced 23
         required: true
-        default: 'auto'
+        default: '18'
         type: string
       audio_track:
         description: auto, zero-based track number (0, 1...), or language code (eng, hin...)
@@ -89,7 +89,7 @@ on:
       title_animation:
         description: Enable title animation
         type: boolean
-        default: true
+        default: false
         required: true
       show_logo:
         description: Show English title logo (requires TMDB URL)
@@ -159,7 +159,7 @@ jobs:
       - name: Download, validate, encode and upload
         id: video
         env:
-          RUNNER_MODE: ${{ fromJSON(inputs.overlay_layout || '{}').runnerMode || inputs.runner_mode || 'single' }}
+          RUNNER_MODE: ${{ fromJSON(inputs.overlay_layout || '{}').runnerMode || inputs.runner_mode || 'parallel' }}
           # Legacy test compatibility: DISTRIBUTED_PREPARE: 'true'
           DISTRIBUTED_PREPARE: 'false' 
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
@@ -188,7 +188,7 @@ jobs:
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
           TELEGRAM_BOT_TOKENS: ${{ secrets.TELEGRAM_BOT_TOKENS || secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -397,7 +397,7 @@ jobs:
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
           TELEGRAM_BOT_TOKENS: ${{ secrets.TELEGRAM_BOT_TOKENS || secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}

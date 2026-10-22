@@ -12,8 +12,11 @@ _STATS='\nCLIXARENA_UPLOAD_STATS:'
 
 
 def file_size(path):
-    try:return path.stat().st_size
-    except (OSError,AttributeError):return None
+    try:
+        from pathlib import Path
+        return Path(path).stat().st_size
+    except (OSError, AttributeError, TypeError):
+        return 0
 
 
 def _number(value):

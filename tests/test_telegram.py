@@ -135,7 +135,7 @@ class TelegramHostTests(unittest.TestCase):
         self.assertEqual(len(ffmpeg_calls), 4)
 
     def test_telegram_invalid_credentials_rejected(self):
-        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024), exists=lambda: False)
+        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024))
         with patch.object(hosts, 'file_size', return_value=1024):
             with self.assertRaises(HostError):
                 upload_telegram(path, 'movie.mp4', 'invalid-token', '-1001234567890')
@@ -168,7 +168,7 @@ class TelegramHostTests(unittest.TestCase):
     def test_telegram_completion_pipeline(self):
         calls = []
         output = io.StringIO()
-        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024), exists=lambda: False)
+        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024))
         env = {
             'OVERLAY_LAYOUT': '{"uploadHost":"telegram"}',
             'GITHUB_OUTPUT': '',
@@ -201,11 +201,11 @@ class TelegramHostTests(unittest.TestCase):
             uploaded.append(name)
             return 'msg-' + name.split('[')[1].split(']')[0]
 
-        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024), exists=lambda: False)
+        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024))
         with patch.object(hosts, 'get_video_dimensions', return_value=(1920, 1080)), \
              patch.object(hosts, 'transcode_resolution', lambda *a, **k: None), \
              patch.object(hosts, 'upload_telegram', side_effect=fake_upload):
-            primary, q_ids = hosts.upload_telegram_multi(path, 'Movie.mp4', '123456789:ABCdefGHIjklMNOpqrsTUVwxyz12345678', '-1001234567890', mode='multi')
+            primary, q_ids = hosts.upload_telegram_multi(path, 'Movie.mp4', '123456789:ABCdefGHIjklMNOpqrsTUVwxyz12345678', '-1001234567890')
 
         self.assertEqual(primary, 'msg-1080p')
         self.assertEqual(q_ids, {'1080p': 'msg-1080p', '720p': 'msg-720p', '480p': 'msg-480p'})
@@ -217,11 +217,11 @@ class TelegramHostTests(unittest.TestCase):
             uploaded.append(name)
             return 'msg-' + name.split('[')[1].split(']')[0]
 
-        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024), exists=lambda: False)
+        path = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=1024))
         with patch.object(hosts, 'get_video_dimensions', return_value=(1280, 720)), \
              patch.object(hosts, 'transcode_resolution', lambda *a, **k: None), \
              patch.object(hosts, 'upload_telegram', side_effect=fake_upload):
-            primary, q_ids = hosts.upload_telegram_multi(path, 'Movie.mp4', '123456789:ABCdefGHIjklMNOpqrsTUVwxyz12345678', '-1001234567890', mode='multi')
+            primary, q_ids = hosts.upload_telegram_multi(path, 'Movie.mp4', '123456789:ABCdefGHIjklMNOpqrsTUVwxyz12345678', '-1001234567890')
 
         self.assertEqual(primary, 'msg-720p')
         self.assertEqual(q_ids, {'720p': 'msg-720p', '480p': 'msg-480p'})
@@ -229,5 +229,3 @@ class TelegramHostTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
