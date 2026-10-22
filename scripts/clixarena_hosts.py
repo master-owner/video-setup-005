@@ -1,5 +1,6 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
 import asyncio, json, os, random, re, subprocess, threading, time, urllib.parse, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from clixarena_upload_metrics import run_upload, file_size, timed_call
 
 # Guarantee an active event loop in MainThread for Pyrogram 2.x sync wrapper
@@ -9,7 +10,12 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 try:
+    import pyrogram
     from pyrogram import Client, utils
+    # Pyrogram 2.x ThreadPoolExecutor monkeypatch for crypto offloading
+    _crypto_exec = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pyrogram_crypto")
+    pyrogram.crypto_executor = _crypto_exec
+
     # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
     utils.MIN_CHANNEL_ID = -1009999999999
     utils.MIN_CHAT_ID = -999999999999
@@ -247,6 +253,10 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
+            import pyrogram
+            if not hasattr(pyrogram, 'crypto_executor') or pyrogram.crypto_executor is None:
+                pyrogram.crypto_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pyrogram_crypto")
+
             last_log_time = 0
             start_upload_time = time.time()
             def upload_progress(current, total):
@@ -265,7 +275,10 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
 
             async def _send():
                 session_name = f"uploader_{threading.get_ident()}_{random.randint(100, 999999)}"
-                async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
+                app = Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8)
+                if not hasattr(app, "crypto_executor"):
+                    app.crypto_executor = pyrogram.crypto_executor
+                async with app:
                     msg = await app.send_video(
                         chat_id=int(chat_str),
                         video=str(path),
