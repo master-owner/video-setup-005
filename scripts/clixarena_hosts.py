@@ -1,6 +1,29 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
-import json,os,random,re,subprocess,threading,time,urllib.parse,urllib.request,urllib.error
+import asyncio, json, os, random, re, subprocess, threading, time, urllib.parse, urllib.request, urllib.error
 from clixarena_upload_metrics import run_upload, file_size, timed_call
+
+# Guarantee an active event loop in MainThread for Pyrogram 2.x sync wrapper
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+try:
+    from pyrogram import Client, utils
+    # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
+    utils.MIN_CHANNEL_ID = -1009999999999
+    utils.MIN_CHAT_ID = -999999999999
+    def _patch_peer_type(peer_id: int) -> str:
+        s = str(peer_id)
+        if not s.startswith('-'):
+            return 'user'
+        elif s.startswith('-100'):
+            return 'channel'
+        else:
+            return 'chat'
+    utils.get_peer_type = _patch_peer_type
+except ImportError:
+    Client = None
 
 
 def selected_host(layout):
@@ -195,8 +218,6 @@ def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
     return False,False
 
 
-
-
 def get_media_duration(path, run=subprocess.run):
     try:
         res = run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', str(path)], capture_output=True, text=True, timeout=30)
@@ -219,26 +240,12 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
         chat_str = f'-100{chat_str}'
 
     if size >= 50 * 1024 * 1024 and api_id and api_hash:
+        if Client is None:
+            raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
         loop = None
         try:
-            import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-
-            from pyrogram import Client, utils
-
-            # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
-            utils.MIN_CHANNEL_ID = -1009999999999
-            utils.MIN_CHAT_ID = -999999999999
-            def _patch_peer_type(peer_id: int) -> str:
-                s = str(peer_id)
-                if not s.startswith('-'):
-                    return 'user'
-                elif s.startswith('-100'):
-                    return 'channel'
-                else:
-                    return 'chat'
-            utils.get_peer_type = _patch_peer_type
 
             last_log_time = 0
             start_upload_time = time.time()
@@ -257,7 +264,7 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
                     print(f"Telegram Uploading [{name}]: {pct:5.1f}% | {curr_mb:6.1f}MB / {tot_mb:6.1f}MB | {speed:4.1f} MB/s | ETA {eta_m}m {eta_s:02d}s", flush=True)
 
             async def _send():
-                session_name = f"uploader_{threading.get_ident()}_{random.randint(100, 99999)}"
+                session_name = f"uploader_{threading.get_ident()}_{random.randint(100, 999999)}"
                 async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
                     msg = await app.send_video(
                         chat_id=int(chat_str),
@@ -489,7 +496,7 @@ def transcode_resolution(input_path, output_path, target_height, run=subprocess.
         raise HostError(f"Transcoding to {target_height}p failed: {e}")
 
 
-def upload_telegram_multi(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run, mode='multi'):
+def upload_telegram_multi(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run, mode='single'):
     w, h = get_video_dimensions(path, run=run)
     base_name = name.removesuffix('.mp4')
     quality_ids = {}
