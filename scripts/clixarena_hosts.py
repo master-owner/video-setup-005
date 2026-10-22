@@ -1,5 +1,5 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
-import json,os,re,subprocess,time,urllib.parse,urllib.request,urllib.error
+import json,os,random,re,subprocess,threading,time,urllib.parse,urllib.request,urllib.error
 from clixarena_upload_metrics import run_upload, file_size, timed_call
 
 
@@ -206,7 +206,7 @@ def get_media_duration(path, run=subprocess.run):
 
 
 def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, mask, run):
-    size = file_size(path)
+    size = file_size(path) or 0
     # Channel ID normalization for Telegram supergroups/channels
     chat_str = str(chat_str).strip()
     if chat_str.startswith('-100'):
@@ -219,8 +219,12 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
         chat_str = f'-100{chat_str}'
 
     if size >= 50 * 1024 * 1024 and api_id and api_hash:
+        loop = None
         try:
             import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
             from pyrogram import Client, utils
 
             # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
@@ -253,7 +257,8 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
                     print(f"Telegram Uploading [{name}]: {pct:5.1f}% | {curr_mb:6.1f}MB / {tot_mb:6.1f}MB | {speed:4.1f} MB/s | ETA {eta_m}m {eta_s:02d}s", flush=True)
 
             async def _send():
-                async with Client("uploader", api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
+                session_name = f"uploader_{threading.get_ident()}_{random.randint(100, 99999)}"
+                async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
                     msg = await app.send_video(
                         chat_id=int(chat_str),
                         video=str(path),
@@ -263,9 +268,15 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
                         progress=upload_progress
                     )
                     return str(msg.id)
-            return asyncio.run(_send())
+            return loop.run_until_complete(_send())
         except Exception as e:
             raise HostError('Telegram Pyrogram upload failed: ' + str(e) + '. Check bot permissions in storage channel.') from None
+        finally:
+            if loop is not None:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
 
     url = 'https://api.telegram.org/bot' + bot_token + '/sendVideo'
     mask(url)
@@ -273,40 +284,42 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
     filename = quote(name)
     local = quote(str(path))
     config = 'url = "' + quote(url) + '"\nform-string = "chat_id=' + quote(chat_str) + '"\nform-string = "supports_streaming=true"\nform-string = "caption=' + quote(name) + '"\n'
-    try:
-        response = run_upload([
-            'curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
-            '--connect-timeout', '30', '--max-time', '3600',
-            '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
-            '--form', 'video=@"' + local + '";filename="' + filename + '"'
-        ], input=config, capture_output=True, text=True, timeout=3610, runner=run, label='Telegram', size=size)
-    except subprocess.TimeoutExpired:
-        raise HostError('Telegram file upload: timed out. Check storage channel before retrying.') from None
-    except Exception:
-        raise HostError('Telegram file upload: uploader failed. Check curl and bot access before retrying.') from None
+    for attempt in range(1, 4):
+        try:
+            response = run_upload([
+                'curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
+                '--connect-timeout', '30', '--max-time', '3600',
+                '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
+                '--form', 'video=@"' + local + '";filename="' + filename + '"'
+            ], input=config, capture_output=True, text=True, timeout=3610, runner=run, label='Telegram', size=size)
 
-    raw, marker, http = response.stdout.rpartition('\nCLIXARENA_HTTP:')
-    if not marker:
-        raw = response.stdout
-        http = 'unknown'
-    http = _status(http.strip())
+            raw, marker, http = response.stdout.rpartition('\nCLIXARENA_HTTP:')
+            if not marker:
+                raw = response.stdout
+                http = 'unknown'
+            http = _status(http.strip())
 
-    if response.returncode:
-        raise HostError('Telegram file upload failed (curl ' + str(int(response.returncode)) + ', HTTP ' + http + '). Check bot permissions in channel.')
-    try:
-        body = json.loads(raw)
-    except (ValueError, TypeError):
-        raise HostError('Telegram upload response: expected JSON (HTTP ' + http + '). Check bot and channel access.') from None
+            if response.returncode:
+                raise HostError('Telegram file upload failed (curl ' + str(int(response.returncode)) + ', HTTP ' + http + '). Check bot permissions in channel.')
+            try:
+                body = json.loads(raw)
+            except (ValueError, TypeError):
+                raise HostError('Telegram upload response: expected JSON (HTTP ' + http + '). Check bot and channel access.') from None
 
-    if not isinstance(body, dict) or not body.get('ok'):
-        desc = body.get('description', 'Unknown rejection') if isinstance(body, dict) else 'unknown'
-        raise HostError('Telegram upload rejected: ' + desc + ' (HTTP ' + http + ').')
+            if not isinstance(body, dict) or not body.get('ok'):
+                desc = body.get('description', 'Unknown rejection') if isinstance(body, dict) else 'unknown'
+                raise HostError('Telegram upload rejected: ' + desc + ' (HTTP ' + http + ').')
 
-    result = body.get('result', {})
-    msg_id = result.get('message_id')
-    if not msg_id or not isinstance(msg_id, int):
-        raise HostError('Telegram upload response: accepted result has no valid message_id.')
-    return str(msg_id)
+            result = body.get('result', {})
+            msg_id = result.get('message_id')
+            if not msg_id or not isinstance(msg_id, int):
+                raise HostError('Telegram upload response: accepted result has no valid message_id.')
+            return str(msg_id)
+        except Exception as e:
+            if attempt >= 3:
+                raise
+            print(f"Telegram upload attempt {attempt} failed ({e}). Auto-retrying in 5 seconds...", flush=True)
+            time.sleep(5)
 
 
 def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run):
@@ -333,7 +346,7 @@ def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, 
         mask(str(api_hash))
 
     primary_token = bot_token_list[0]
-    size = file_size(path)
+    size = file_size(path) or 0
     part_limit = 1995 * 1024 * 1024  # 1995MB safe boundary below 2000MB Telegram limit
 
     if size > part_limit:
@@ -499,7 +512,7 @@ def upload_telegram_multi(path, name, bot_token, chat_id, api_id=None, api_hash=
         else:
             targets = [('480p', None)]
 
-        orig_size = file_size(path)
+        orig_size = file_size(path) or 0
         part_limit = 1950 * 1024 * 1024
 
         primary_id = None
