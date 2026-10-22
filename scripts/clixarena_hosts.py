@@ -1,16 +1,18 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
-import asyncio, json, os, random, re, subprocess, threading, time, urllib.parse, urllib.request, urllib.error
+import asyncio, json, math, os, random, re, subprocess, tempfile, time, urllib.parse, urllib.request, urllib.error
+from pathlib import Path
 from clixarena_upload_metrics import run_upload, file_size, timed_call
 
-# Guarantee an active event loop in MainThread for Pyrogram 2.x sync wrapper
+# Guarantee an active event loop in MainThread for Pyrogram 2.x
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 try:
-    import pyrogram as _pyrogram
-    Client, utils = _pyrogram.Client, _pyrogram.utils
+    import pyrogram
+    from pyrogram import Client, utils
+
     # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
     utils.MIN_CHANNEL_ID = -1009999999999
     utils.MIN_CHAT_ID = -999999999999
@@ -25,29 +27,6 @@ try:
     utils.get_peer_type = _patch_peer_type
 except ImportError:
     Client = None
-    _pyrogram = None
-
-
-_crypto_executor_lock = threading.Lock()
-
-
-def _ensure_crypto_executor():
-    """Some packaged Pyrogram runtimes omit the executor used by MTProto.
-
-    Keep the native executor when available; otherwise create ONE shared pool,
-    before starting clients, including when uploads start on multiple threads.
-    """
-    if _pyrogram is None:
-        raise HostError('Pyrogram is not installed in this upload runtime.')
-    with _crypto_executor_lock:
-        executor = getattr(_pyrogram, 'crypto_executor', None)
-        if executor is None:
-            from concurrent.futures import ThreadPoolExecutor
-            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='TelegramCrypto')
-            _pyrogram.crypto_executor = executor
-        if not callable(getattr(executor, 'submit', None)):
-            raise HostError('Pyrogram crypto executor is invalid. Reinstall Pyrogram and rebuild the runner image.')
-    return executor
 
 
 def selected_host(layout):
@@ -250,43 +229,10 @@ def get_media_duration(path, run=subprocess.run):
         return 0.0
 
 
-def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, mask, run):
-    # Establish the thread's loop BEFORE any upload setup or Pyrogram wrapper.
-    # ThreadPoolExecutor workers have no default loop on supported Python versions.
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return _upload_telegram_single_impl(path, name, bot_token, chat_str, api_id, api_hash, mask, run)
-    finally:
+async def _pyrogram_send_video(path, name, bot_token, chat_str, api_id, api_hash, bot_label="Telegram"):
+    """Native AsyncIO upload for Pyrogram without threadpool contention or event loop crashes."""
+    for attempt in range(1, 4):
         try:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.run_until_complete(loop.shutdown_default_executor())
-        finally:
-            asyncio.set_event_loop(None)
-            loop.close()
-
-
-def _upload_telegram_single_impl(path, name, bot_token, chat_str, api_id, api_hash, mask, run):
-    size = file_size(path) or 0
-    # Channel ID normalization for Telegram supergroups/channels
-    chat_str = str(chat_str).strip()
-    if chat_str.startswith('-100'):
-        pass
-    elif chat_str.startswith('-'):
-        chat_str = f'-100{chat_str.lstrip("-")}'
-    elif chat_str.startswith('100'):
-        chat_str = f'-{chat_str}'
-    else:
-        chat_str = f'-100{chat_str}'
-
-    if size >= 50 * 1024 * 1024 and api_id and api_hash:
-        if Client is None:
-            raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
-        loop = None
-        try:
-            _ensure_crypto_executor()
-            loop = asyncio.get_event_loop()
-
             last_log_time = 0
             start_upload_time = time.time()
             def upload_progress(current, total):
@@ -301,24 +247,27 @@ def _upload_telegram_single_impl(path, name, bot_token, chat_str, api_id, api_ha
                     tot_mb = total / (1024 * 1024)
                     eta_sec = (total - current) / (current / elapsed) if current > 0 and elapsed > 0 else 0
                     eta_m, eta_s = divmod(int(eta_sec), 60)
-                    print(f"Telegram Uploading [{name}]: {pct:5.1f}% | {curr_mb:6.1f}MB / {tot_mb:6.1f}MB | {speed:4.1f} MB/s | ETA {eta_m}m {eta_s:02d}s", flush=True)
+                    print(f"[{bot_label}] Uploading [{name}]: {pct:5.1f}% | {curr_mb:6.1f}MB / {tot_mb:6.1f}MB | {speed:4.1f} MB/s | ETA {eta_m}m {eta_s:02d}s", flush=True)
 
-            async def _send():
-                session_name = f"uploader_{threading.get_ident()}_{random.randint(100, 999999)}"
-                async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
-                    msg = await app.send_video(
-                        chat_id=int(chat_str),
-                        video=str(path),
-                        caption=name,
-                        file_name=name,
-                        supports_streaming=True,
-                        progress=upload_progress
-                    )
-                    return str(msg.id)
-            return loop.run_until_complete(_send())
+            session_name = f"uploader_{random.randint(100000, 999999)}"
+            async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
+                msg = await app.send_video(
+                    chat_id=int(chat_str),
+                    video=str(path),
+                    caption=name,
+                    file_name=name,
+                    supports_streaming=True,
+                    progress=upload_progress
+                )
+                return str(msg.id)
         except Exception as e:
-            raise HostError('Telegram Pyrogram upload failed: ' + str(e) + '. Check the Pyrogram runtime and storage channel access.') from None
+            if attempt >= 3:
+                raise HostError(f"Telegram Pyrogram upload failed on [{bot_label}]: {e}. Check bot permissions in storage channel.") from None
+            print(f"[{bot_label}] Pyrogram upload attempt {attempt} failed ({e}). Auto-retrying in 5 seconds...", flush=True)
+            await asyncio.sleep(5)
 
+
+def _curl_send_video(path, name, bot_token, chat_str, mask, run, size):
     url = 'https://api.telegram.org/bot' + bot_token + '/sendVideo'
     mask(url)
     quote = lambda v: v.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
@@ -363,8 +312,27 @@ def _upload_telegram_single_impl(path, name, bot_token, chat_str, api_id, api_ha
             time.sleep(5)
 
 
+def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, mask, run, bot_label="Telegram"):
+    size = file_size(path) or 0
+    chat_str = str(chat_str).strip()
+    if chat_str.startswith('-100'):
+        pass
+    elif chat_str.startswith('-'):
+        chat_str = f'-100{chat_str.lstrip("-")}'
+    elif chat_str.startswith('100'):
+        chat_str = f'-{chat_str}'
+    else:
+        chat_str = f'-100{chat_str}'
+
+    if size >= 50 * 1024 * 1024 and api_id and api_hash:
+        if Client is None:
+            raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
+        return asyncio.run(_pyrogram_send_video(path, name, bot_token, chat_str, api_id, api_hash, bot_label=bot_label))
+
+    return _curl_send_video(path, name, bot_token, chat_str, mask, run, size)
+
+
 def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run):
-    print('Telegram uploader runtime fix: 2026.10.22-loop-v2', flush=True)
     # Parse single or multiple bot tokens (supports TELEGRAM_BOT_TOKENS or comma-separated tokens in bot_token)
     env_tokens = os.environ.get('TELEGRAM_BOT_TOKENS', '').strip()
     raw_tokens = env_tokens or str(bot_token or '').strip()
@@ -392,10 +360,6 @@ def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, 
     part_limit = 1995 * 1024 * 1024  # 1995MB safe boundary below 2000MB Telegram limit
 
     if size > part_limit:
-        import math, tempfile
-        from pathlib import Path
-        from concurrent.futures import ThreadPoolExecutor
-
         num_parts = math.ceil(size / part_limit)
         print(f"Telegram file size is {round(size / (1024 * 1024), 1)}MB (>2000MB). Automatically splitting into {num_parts} parts.", flush=True)
 
@@ -424,26 +388,31 @@ def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, 
                 part_name = f"{base_name} - Part {i+1}.mp4"
                 parts_info.append((i, part_path, part_name))
 
-            # MULTI-BOT PARALLEL UPLOADING
-            max_workers = min(num_parts, max(1, len(bot_token_list)))
-            if max_workers > 1:
-                print(f"Multi-Bot Speed Boost: Uploading {num_parts} parts concurrently across {max_workers} bots...", flush=True)
+            # MULTI-BOT CONCURRENT ASYNCIO UPLOADING (ZERO THREADPOOL CRASH)
+            use_pyrogram = any((file_size(p[1]) or 0) >= 50 * 1024 * 1024 for p in parts_info) and api_id and api_hash
+            if use_pyrogram:
+                if Client is None:
+                    raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
+
+                async def _upload_all_parts():
+                    tasks = []
+                    for i, (part_idx, part_path, part_name) in enumerate(parts_info):
+                        assigned_tok = bot_token_list[i % len(bot_token_list)]
+                        bot_label = f"Bot #{i % len(bot_token_list) + 1}" if len(bot_token_list) > 1 else "Telegram"
+                        print(f"[{bot_label}] Starting upload of part {i+1}/{num_parts}...", flush=True)
+                        tasks.append(_pyrogram_send_video(part_path, part_name, assigned_tok, chat_str, api_id, api_hash, bot_label=bot_label))
+                    return await asyncio.gather(*tasks)
+
+                print(f"Multi-Bot Speed Boost: Uploading {num_parts} parts concurrently across {min(num_parts, len(bot_token_list))} bots via AsyncIO...", flush=True)
+                part_results = asyncio.run(_upload_all_parts())
             else:
-                print(f"Uploading {num_parts} parts to Telegram...", flush=True)
-
-            part_results = [None] * num_parts
-
-            def _upload_worker(idx, p_path, p_name):
-                assigned_tok = bot_token_list[idx % len(bot_token_list)]
-                bot_label = f"Bot #{idx % len(bot_token_list) + 1}" if len(bot_token_list) > 1 else "Telegram"
-                print(f"[{bot_label}] Starting upload of part {idx+1}/{num_parts}...", flush=True)
-                return idx, _upload_telegram_single(p_path, p_name, assigned_tok, chat_str, api_id, api_hash, mask, run)
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(_upload_worker, i, p_path, p_name) for i, p_path, p_name in parts_info]
-                for f in futures:
-                    idx, p_id = f.result()
-                    part_results[idx] = p_id
+                part_results = []
+                for i, (part_idx, part_path, part_name) in enumerate(parts_info):
+                    assigned_tok = bot_token_list[i % len(bot_token_list)]
+                    bot_label = f"Bot #{i % len(bot_token_list) + 1}" if len(bot_token_list) > 1 else "Telegram"
+                    print(f"[{bot_label}] Starting upload of part {i+1}/{num_parts}...", flush=True)
+                    p_id = _curl_send_video(part_path, part_name, assigned_tok, chat_str, mask, run, file_size(part_path))
+                    part_results.append(p_id)
 
         combined_id = "-".join(part_results)
         print(f"All {num_parts} parts successfully uploaded to Telegram: {combined_id}", flush=True)
@@ -543,9 +512,6 @@ def upload_telegram_multi(path, name, bot_token, chat_id, api_id=None, api_hash=
         quality_ids[q_name] = res_id
         return res_id, quality_ids
 
-    import tempfile
-    from pathlib import Path
-
     with tempfile.TemporaryDirectory() as tmpdir:
         if h >= 900:
             targets = [('1080p', None), ('720p', 720), ('480p', 480)]
@@ -569,7 +535,7 @@ def upload_telegram_multi(path, name, bot_token, chat_id, api_id=None, api_hash=
             else:
                 h_to_use = target_h if target_h is not None else min(h, 1080)
                 q_path = Path(tmpdir) / f"{base_name}_{q_name}.mp4"
-                
+
                 source_video = path
                 if q_name == '480p' and prev_720p_path and prev_720p_path.exists():
                     source_video = prev_720p_path
