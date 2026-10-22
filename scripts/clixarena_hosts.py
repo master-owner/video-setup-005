@@ -1,5 +1,5 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
-import json,re,subprocess,time,urllib.parse,urllib.request,urllib.error
+import json,os,re,subprocess,time,urllib.parse,urllib.request,urllib.error
 from clixarena_upload_metrics import run_upload, file_size, timed_call
 
 
