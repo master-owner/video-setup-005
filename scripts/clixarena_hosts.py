@@ -1,6 +1,5 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
 import asyncio, json, os, random, re, subprocess, threading, time, urllib.parse, urllib.request, urllib.error
-from concurrent.futures import ThreadPoolExecutor
 from clixarena_upload_metrics import run_upload, file_size, timed_call
 
 # Guarantee an active event loop in MainThread for Pyrogram 2.x sync wrapper
@@ -10,12 +9,8 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 try:
-    import pyrogram
-    from pyrogram import Client, utils
-    # Pyrogram 2.x ThreadPoolExecutor monkeypatch for crypto offloading
-    _crypto_exec = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pyrogram_crypto")
-    pyrogram.crypto_executor = _crypto_exec
-
+    import pyrogram as _pyrogram
+    Client, utils = _pyrogram.Client, _pyrogram.utils
     # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
     utils.MIN_CHANNEL_ID = -1009999999999
     utils.MIN_CHAT_ID = -999999999999
@@ -30,6 +25,29 @@ try:
     utils.get_peer_type = _patch_peer_type
 except ImportError:
     Client = None
+    _pyrogram = None
+
+
+_crypto_executor_lock = threading.Lock()
+
+
+def _ensure_crypto_executor():
+    """Some packaged Pyrogram runtimes omit the executor used by MTProto.
+
+    Keep the native executor when available; otherwise create ONE shared pool,
+    before starting clients, including when uploads start on multiple threads.
+    """
+    if _pyrogram is None:
+        raise HostError('Pyrogram is not installed in this upload runtime.')
+    with _crypto_executor_lock:
+        executor = getattr(_pyrogram, 'crypto_executor', None)
+        if executor is None:
+            from concurrent.futures import ThreadPoolExecutor
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='TelegramCrypto')
+            _pyrogram.crypto_executor = executor
+        if not callable(getattr(executor, 'submit', None)):
+            raise HostError('Pyrogram crypto executor is invalid. Reinstall Pyrogram and rebuild the runner image.')
+    return executor
 
 
 def selected_host(layout):
@@ -233,6 +251,22 @@ def get_media_duration(path, run=subprocess.run):
 
 
 def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, mask, run):
+    # Establish the thread's loop BEFORE any upload setup or Pyrogram wrapper.
+    # ThreadPoolExecutor workers have no default loop on supported Python versions.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return _upload_telegram_single_impl(path, name, bot_token, chat_str, api_id, api_hash, mask, run)
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
+def _upload_telegram_single_impl(path, name, bot_token, chat_str, api_id, api_hash, mask, run):
     size = file_size(path) or 0
     # Channel ID normalization for Telegram supergroups/channels
     chat_str = str(chat_str).strip()
@@ -250,12 +284,8 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
             raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
         loop = None
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            import pyrogram
-            if not hasattr(pyrogram, 'crypto_executor') or pyrogram.crypto_executor is None:
-                pyrogram.crypto_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pyrogram_crypto")
+            _ensure_crypto_executor()
+            loop = asyncio.get_event_loop()
 
             last_log_time = 0
             start_upload_time = time.time()
@@ -275,10 +305,7 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
 
             async def _send():
                 session_name = f"uploader_{threading.get_ident()}_{random.randint(100, 999999)}"
-                app = Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8)
-                if not hasattr(app, "crypto_executor"):
-                    app.crypto_executor = pyrogram.crypto_executor
-                async with app:
+                async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
                     msg = await app.send_video(
                         chat_id=int(chat_str),
                         video=str(path),
@@ -290,13 +317,7 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
                     return str(msg.id)
             return loop.run_until_complete(_send())
         except Exception as e:
-            raise HostError('Telegram Pyrogram upload failed: ' + str(e) + '. Check bot permissions in storage channel.') from None
-        finally:
-            if loop is not None:
-                try:
-                    loop.close()
-                except Exception:
-                    pass
+            raise HostError('Telegram Pyrogram upload failed: ' + str(e) + '. Check the Pyrogram runtime and storage channel access.') from None
 
     url = 'https://api.telegram.org/bot' + bot_token + '/sendVideo'
     mask(url)
@@ -343,6 +364,7 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
 
 
 def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run):
+    print('Telegram uploader runtime fix: 2026.10.22-loop-v2', flush=True)
     # Parse single or multiple bot tokens (supports TELEGRAM_BOT_TOKENS or comma-separated tokens in bot_token)
     env_tokens = os.environ.get('TELEGRAM_BOT_TOKENS', '').strip()
     raw_tokens = env_tokens or str(bot_token or '').strip()
