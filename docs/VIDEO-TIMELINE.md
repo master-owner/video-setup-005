@@ -1,0 +1,5 @@
+# Actual video timeline validation
+Version 2026.10.15-video-timeline.
+Source duration is measured from the first video stream packet presentation timestamps plus packet duration, excluding source subtitle padding. The scan runs on the already downloaded local file, not over the network, with a five-minute watchdog. Burn, soft subtitle, and transfer MP4 preparation use this duration. The existing output codec and two-second duration integrity checks remain enforced. This does not silently accept an output cut short relative to its source video packets.
+Validated with a real FFmpeg-generated MKV containing a two-second video and subtitles ending at six seconds: measured video duration two seconds. Timestamp reordering test passed; Python compilation passed.
+Update github-actions files and Vercel files from this complete bundle, preserve fonts/secrets, redeploy and submit a NEW request. Old source_commit-pinned reruns use old code. URL recovery and success-only cleanup behavior are preserved. No live encode/upload/deployment was triggered.

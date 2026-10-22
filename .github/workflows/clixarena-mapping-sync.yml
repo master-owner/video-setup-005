@@ -1,0 +1,52 @@
+name: CLIXARENA mapping sync
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Sync hosts or restore removed StreamHG mapping references
+        type: choice
+        options:
+          - sync
+          - restore_streamhg
+        default: sync
+      restore_sync_commit:
+        description: Full 40-character SHA of the sync commit that removed StreamHG references (restore only)
+        type: string
+        default: ''
+permissions:
+  contents: write
+concurrency:
+  group: clixarena-mapping-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install encryption dependency
+        run: sudo apt-get update -qq && sudo apt-get install -y python3-cryptography
+      - name: Sync Streamtape, StreamHG and Abyss mappings safely
+        if: github.event_name != 'workflow_dispatch' || inputs.operation != 'restore_streamhg'
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
+          STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
+          STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          ABYSS_EMAIL: ${{ secrets.ABYSS_EMAIL }}
+          ABYSS_PASSWORD: ${{ secrets.ABYSS_PASSWORD }}
+          ABYSS_AUTH_TOKEN: ${{ secrets.ABYSS_AUTH_TOKEN }}
+        run: python3 scripts/clixarena_mapping_sync.py
+      - name: Restore only StreamHG references removed by the selected sync commit
+        if: github.event_name == 'workflow_dispatch' && inputs.operation == 'restore_streamhg'
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
+          RESTORE_SYNC_COMMIT: ${{ inputs.restore_sync_commit }}
+        run: python3 scripts/clixarena_mapping_restore.py

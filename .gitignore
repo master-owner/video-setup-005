@@ -1,0 +1,35 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Video encoding & temporary scratch files
+*.mp4
+*.mkv
+*.m4a
+*.ass
+parallel-media/
+preview/
+encode-private.log
+mapping-result.json
+
+# Torrent downloads & state artifacts
+.clixarena/torrents/*.torrent
+.clixarena/torrent/*.json
+.clixarena/download/*.json
+.clixarena/audio/*.json
+.clixarena/completed/*.json
+!.clixarena/*/.gitkeep
+
+# Subtitles from runs (keep README.md and .gitkeep)
+subtitles/jobs/
+subtitles/*.srt
+!subtitles/.gitkeep
+!subtitles/README.md
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

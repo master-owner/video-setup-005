@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CLIXARENA subtitle upload</title>
+<style>[hidden]{display:none!important}</style>
+<style>body{background:#10151c;color:#eee;font:17px system-ui;max-width:720px;margin:80px auto;padding:24px}h1{color:#ffdb58}#drop{border:2px dashed #758498;padding:48px;text-align:center;border-radius:16px}input,button,a{font:inherit}button,a{display:inline-block;background:#ffdb58;color:#111;border:0;border-radius:8px;padding:12px 20px;margin:12px 0}p{line-height:1.6}#file{max-width:100%}#repo{width:90%;padding:12px;background:#202a38;color:white;border:1px solid #758498;border-radius:8px}</style>
+<h1>CLIXARENA subtitles</h1><label>Language <select id="language"><option value="sin">Sinhala</option><option value="eng">English</option></select></label><p>Drop a Sinhala or English UTF-8 SRT here. Its download name becomes <b>sinhala.srt</b>. This page works locally and sends no file or credentials anywhere.</p>
+<div id="drop">Drop .srt here<br><input id="file" type="file" accept=".srt"></div>
+<p id="status" role="status"></p><a id="download" hidden download="sinhala.srt">Download sinhala.srt</a>
+<p>Then open your repository's <b>subtitles</b> folder → <b>Add file → Upload files</b>, drag the file there and commit. GitHub's Run workflow form does not accept file attachments. You can also upload the original SRT directly with any filename; <b>subtitle_path=auto</b> works when that folder has exactly one SRT.</p>
+<input id="repo" placeholder="GitHub repository, e.g. clix-owner/Linux-Environment"><button id="open">Open GitHub repository</button>
+<script>
+let currentURL;const status=document.getElementById('status'),link=document.getElementById('download');
+async function choose(file){link.hidden=true;if(!file||!file.name.toLowerCase().endsWith('.srt')||file.size>10*1024*1024){status.textContent='Choose a .srt file smaller than 10 MB.';return}try{let text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());if(!(document.getElementById('language').value==='sin'?/[\u0d80-\u0dff]/:/[A-Za-z]/).test(text)||!text.includes(' --> '))throw Error();if(currentURL)URL.revokeObjectURL(currentURL);currentURL=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));link.href=currentURL;link.hidden=false;status.textContent='Ready: '+file.name+' → sinhala.srt';}catch{status.textContent='This file must be a valid UTF-8 SRT in the selected language.'}}
+document.getElementById('file').onchange=e=>choose(e.target.files[0]);let drop=document.getElementById('drop');drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();choose(e.dataTransfer.files[0])};document.getElementById('open').onclick=()=>{let repo=document.getElementById('repo').value.trim();if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)){status.textContent='Enter owner/repository.';return}window.open('https://github.com/'+repo,'_blank','noopener,noreferrer')};
+</script></html>

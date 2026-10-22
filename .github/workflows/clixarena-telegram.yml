@@ -1,0 +1,93 @@
+name: CLIXARENA Telegram Multi-Resolution Pipeline
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: Direct HTTPS video URL to transcode & upload to Telegram
+        required: true
+        type: string
+      output_name:
+        description: Video filename (e.g. Avatar.2024.mp4)
+        required: true
+        default: CLIXARENA.mp4
+        type: string
+      tmdb_id:
+        description: TMDB ID for movie/TV (or MAL ID for Anime)
+        required: false
+        type: string
+      media_type:
+        description: Media type
+        required: true
+        type: choice
+        default: movie
+        options:
+          - movie
+          - tv
+          - anime
+      season:
+        description: Season number (0 for movie, 1+ for TV/Anime)
+        required: false
+        default: "0"
+        type: string
+      episode:
+        description: Episode number (0 for movie, 1+ for TV/Anime)
+        required: false
+        default: "0"
+        type: string
+      title:
+        description: Display title for mappings.json (optional)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: none
+  issues: none
+  packages: none
+  id-token: none
+
+concurrency:
+  group: clixarena-telegram-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  telegram_upload:
+    name: Transcode & Upload to Telegram
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install media and Telegram tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg python3-cryptography
+          pip install --no-cache-dir --break-system-packages pyrogram tgcrypto
+
+      - name: Transcode multi-resolution, split parts & upload to Telegram
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+          OUTPUT_NAME: ${{ inputs.output_name }}
+          TMDB_ID: ${{ inputs.tmdb_id }}
+          MEDIA_TYPE: ${{ inputs.media_type }}
+          SEASON: ${{ inputs.season }}
+          EPISODE: ${{ inputs.episode }}
+          TITLE: ${{ inputs.title }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python3 -u scripts/clixarena_telegram_standalone.py
+
+      - name: Mapping receipt artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-telegram-mapping
+          path: mapping-result.json
+          if-no-files-found: ignore
+          retention-days: 7

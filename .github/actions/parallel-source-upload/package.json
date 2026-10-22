@@ -1,0 +1,8 @@
+{
+  "name": "clixarena-parallel-source-upload",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {"build": "ncc build index.cjs -o dist-current --license licenses.txt"},
+  "dependencies": {"@actions/artifact": "6.3.1"},
+  "devDependencies": {"@vercel/ncc": "0.38.3"}
+}

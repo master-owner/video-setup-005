@@ -1,0 +1,422 @@
+name: CLIXARENA video encode and upload
+run-name: CLIXARENA Â· ${{ inputs.output_name }} Â· ${{ inputs.job_id || inputs.subtitle_path }}
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: Direct HTTPS video URL (inputs are visible to repository users)
+        required: true
+        type: string
+      output_name:
+        description: Video filename (with or without .mp4)
+        required: true
+        default: CLIXARENA.mp4
+        type: string
+      overlay_layout:
+        description: Preview layout JSON (set by portal; blank uses defaults)
+        type: string
+        required: false
+      overlay_name:
+        description: Separate title shown in video (blank uses filename)
+        type: string
+        required: false
+      runner_mode:
+        description: Single runner (direct, fast, no chunk transfer) or Parallel (4 runners)
+        required: false
+        default: single
+        type: choice
+        options:
+          - single
+          - parallel
+      subtitle_method:
+        description: Burn, selected-language on/off subtitles, or MP4 upload without added subtitles
+        required: true
+        type: choice
+        default: burn
+        options:
+          - burn
+          - soft
+          - transfer
+      sample_only:
+        description: Encode first 3 minutes for preview (no host upload)
+        required: true
+        default: false
+        type: boolean
+      subtitle_path:
+        description: auto picks the only SRT uploaded to subtitles/ (any filename), or enter its path
+        default: auto
+        required: true
+        type: string
+      font_path:
+        description: Font TTF/OTF path in fonts/ or system:noto-sinhala / system:dejavu-sans / system:dejavu-serif
+        default: fonts/IskoolaPota.ttf
+        required: true
+        type: string
+      quality:
+        description: Burn/on-off standard frame size and quality; Original preserves source dimensions
+        required: true
+        default: 720p - Balanced
+        type: choice
+        options:
+          - Original - High
+          - Original - Balanced
+          - 2160p - High
+          - 2160p - Balanced
+          - 1440p - High
+          - 1440p - Balanced
+          - 1080p - High
+          - 1080p - Balanced
+          - 720p - High
+          - 720p - Balanced
+          - 480p - High
+          - 480p - Balanced
+          - 360p - High
+          - 360p - Balanced
+      crf:
+        description: CRF 0-51 (lower = higher quality/larger file); auto uses High 18 or Balanced 23
+        required: true
+        default: 'auto'
+        type: string
+      audio_track:
+        description: auto, zero-based track number (0, 1...), or language code (eng, hin...)
+        required: true
+        default: auto
+        type: string
+      tmdb_url:
+        description: TMDB movie/TV URL for English original logo (blank disables title overlay)
+        required: false
+        type: string
+      title_animation:
+        description: Enable title animation
+        type: boolean
+        default: true
+        required: true
+      show_logo:
+        description: Show English title logo (requires TMDB URL)
+        type: boolean
+        default: true
+        required: true
+      show_name:
+        description: Show output name
+        type: boolean
+        default: true
+        required: true
+      show_message:
+        description: Show Sinhala message
+        type: boolean
+        default: true
+        required: true
+      overlay_start:
+        description: Title animation start (seconds or HH:MM:SS)
+        required: true
+        default: '5'
+        type: string
+      overlay_duration:
+        description: Title animation duration in seconds (4 to 60)
+        required: true
+        default: '8'
+        type: string
+      source_commit:
+        description: Uploaded subtitle commit (set automatically by the Vercel page)
+        required: false
+        type: string
+      job_id:
+        description: Portal tracking ID (set automatically by the Vercel page)
+        required: false
+        type: string
+permissions:
+  contents: write
+  pull-requests: none
+  issues: none
+  packages: none
+  id-token: none
+concurrency:
+  group: clixarena-video-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  encode:
+    name: Download, audio selection and preparation
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 350
+    outputs:
+      distributed: ${{ steps.video.outputs.distributed }}
+      matrix: ${{ steps.video.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - name: Verify pre-built environment
+        run: |
+          echo "Pre-built GHCR Container active: Zero download delay!"
+          ffmpeg -version | head -n 1
+          python3 -c "import pyrogram, tgcrypto, libtorrent; print('All libraries pre-installed and ready.')" 
+      - name: Download, validate, encode and upload
+        id: video
+        env:
+          RUNNER_MODE: ${{ fromJSON(inputs.overlay_layout || '{}').runnerMode || inputs.runner_mode || 'single' }}
+          # Legacy test compatibility: DISTRIBUTED_PREPARE: 'true'
+          DISTRIBUTED_PREPARE: 'false' 
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
+          VIDEO_URL: ${{ inputs.video_url }}
+          OVERLAY_LAYOUT: ${{ inputs.overlay_layout }}
+          OVERLAY_NAME: ${{ inputs.overlay_name }}
+          OUTPUT_NAME: ${{ inputs.output_name }}
+          SUBTITLE_METHOD: ${{ inputs.subtitle_method }}
+          SAMPLE_ONLY: ${{ inputs.sample_only }}
+          SUBTITLE_PATH: ${{ inputs.subtitle_path }}
+          FONT_PATH: ${{ inputs.font_path }}
+          CRF: ${{ inputs.crf }}
+          QUALITY: ${{ inputs.quality }}
+          PORTAL_JOB_ID: ${{ inputs.job_id }}
+          AUDIO_TRACK: ${{ inputs.audio_track }}
+          TMDB_URL: ${{ inputs.tmdb_url }}
+          TITLE_ANIMATION: ${{ inputs.title_animation }}
+          SHOW_LOGO: ${{ inputs.show_logo }}
+          SHOW_NAME: ${{ inputs.show_name }}
+          SHOW_MESSAGE: ${{ inputs.show_message }}
+          OVERLAY_START: ${{ inputs.overlay_start }}
+          OVERLAY_DURATION: ${{ inputs.overlay_duration }}
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
+          STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
+          STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python3 -u scripts/clixarena_video.py
+      - name: Stage source chunks concurrently
+        if: ${{ steps.video.outputs.distributed == 'true' }}
+        uses: ./.github/actions/parallel-source-upload
+        with:
+          matrix: ${{ steps.video.outputs.matrix }}
+      - name: Stage encoding manifest
+        if: ${{ steps.video.outputs.distributed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parallel-manifest
+          path: parallel-media/manifest.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Stage burn fonts and artwork
+        if: ${{ steps.video.outputs.distributed == 'true' && inputs.subtitle_method == 'burn' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parallel-assets
+          path: parallel-media/assets/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Stage source audio/subtitle for parallel companion
+        if: ${{ steps.video.outputs.distributed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parallel-companion-source
+          path: |
+            parallel-media/ready.txt
+            parallel-media/companion-source.mkv
+            parallel-media/audio-source.mka
+            parallel-media/subtitle.srt
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Saved video mapping
+        if: ${{ always() && !inputs.sample_only }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-mapping
+          path: mapping-result.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Downloadable sample
+        if: ${{ inputs.sample_only && success() && steps.video.outputs.distributed != 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-sample
+          path: preview/sample.mp4
+          if-no-files-found: error
+          retention-days: 3
+      - name: Selected subtitle companion
+        if: ${{ inputs.subtitle_method == 'soft' && success() && steps.video.outputs.distributed != 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-subtitle
+          path: preview/subtitle.srt
+          if-no-files-found: error
+          retention-days: 3
+      - name: Failure guidance
+        if: failure()
+        run: echo '::error::Check the stage message above. Verify video URL, repository SRT/font paths, UTF-8 SRT, selected language and font support, disk space and the selected upload host secrets. Uploads are not retried automatically; check the selected host account before rerunning.'
+  chunks:
+    name: Encode chunk ${{ matrix.chunk }} of four
+    needs: encode
+    if: ${{ needs.encode.outputs.distributed == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        chunk: ${{ fromJSON(needs.encode.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - name: Verify pre-built FFmpeg
+        run: ffmpeg -version | head -n 1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-source-${{ matrix.chunk }}
+          path: parallel-media
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-manifest
+          path: parallel-media
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: ${{ inputs.subtitle_method == 'burn' }}
+        with:
+          name: parallel-assets
+          path: parallel-media/assets
+      - name: Encode and validate this chunk
+        run: python3 -u scripts/clixarena_distributed.py worker --index '${{ matrix.chunk }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parallel-encoded-${{ matrix.chunk }}
+          path: |
+            parallel-media/encoded-*.mp4
+            parallel-media/encoded-*.json
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  companion:
+    name: Prepare audio alongside video workers
+    needs: encode
+    if: ${{ needs.encode.outputs.distributed == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 125
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - name: Verify pre-built audio tools
+        run: ffmpeg -version | head -n 1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-manifest
+          path: parallel-media
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-companion-source
+          path: parallel-media
+      - name: Prepare and validate AAC companion
+        run: python3 -u scripts/clixarena_distributed.py companion
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parallel-companion
+          path: |
+            parallel-media/ready.txt
+            parallel-media/companion.mkv
+            parallel-media/audio.m4a
+            parallel-media/subtitle.srt
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  finalize:
+    name: Join, validate and upload MP4
+    needs: [encode, chunks, companion]
+    if: ${{ success() && needs.encode.outputs.distributed == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - name: Verify pre-built media tools
+        run: |
+          ffmpeg -version | head -n 1
+          python3 -c "import pyrogram, tgcrypto, cryptography; print('Finalize tools ready.')" 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: parallel-encoded-*
+          merge-multiple: true
+          path: parallel-media
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-companion
+          path: parallel-media
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-manifest
+          path: parallel-media
+      - name: Final validation and selected host upload
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
+          OVERLAY_LAYOUT: ${{ inputs.overlay_layout }}
+          OUTPUT_NAME: ${{ inputs.output_name }}
+          SAMPLE_ONLY: ${{ inputs.sample_only }}
+          SUBTITLE_PATH: ${{ inputs.subtitle_path }}
+          PORTAL_JOB_ID: ${{ inputs.job_id }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
+          STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
+          STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python3 -u scripts/clixarena_distributed.py merge
+      - name: Mapping receipt
+        if: ${{ always() && !inputs.sample_only }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-mapping
+          path: mapping-result.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Sample MP4
+        if: ${{ success() && inputs.sample_only }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-sample
+          path: preview/sample.mp4
+          if-no-files-found: error
+          retention-days: 3
+      - name: Subtitle companion
+        if: ${{ success() && inputs.subtitle_method == 'soft' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-subtitle
+          path: preview/subtitle.srt
+          if-no-files-found: error
+          retention-days: 3

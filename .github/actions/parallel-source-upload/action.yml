@@ -1,0 +1,9 @@
+name: Parallel source artifact upload
+description: Upload up to four validated video chunks concurrently with GitHub's artifact SDK
+inputs:
+  matrix:
+    description: JSON array of prepared chunk indices
+    required: true
+runs:
+  using: node24
+  main: dist-current/index.cjs
