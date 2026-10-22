@@ -310,24 +310,37 @@ def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, m
 
 
 def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run):
-    if not bot_token or not re.fullmatch(r'\d{8,12}:[A-Za-z0-9_-]{30,45}', bot_token):
-        raise HostError('Telegram configuration: TELEGRAM_BOT_TOKEN is missing or invalid format.')
+    # Parse single or multiple bot tokens (supports TELEGRAM_BOT_TOKENS or comma-separated tokens in bot_token)
+    env_tokens = os.environ.get('TELEGRAM_BOT_TOKENS', '').strip()
+    raw_tokens = env_tokens or str(bot_token or '').strip()
+    bot_token_list = [t.strip() for t in re.split(r'[\s,;]+', raw_tokens) if t.strip() and re.fullmatch(r'\d{8,12}:[A-Za-z0-9_-]{30,45}', t.strip())]
+    if not bot_token_list:
+        if bot_token and re.fullmatch(r'\d{8,12}:[A-Za-z0-9_-]{30,45}', str(bot_token).strip()):
+            bot_token_list = [str(bot_token).strip()]
+        else:
+            raise HostError('Telegram configuration: TELEGRAM_BOT_TOKEN is missing or invalid format.')
+
     chat_str = str(chat_id).strip()
     if not chat_str or not re.fullmatch(r'-?\d{5,20}', chat_str):
         raise HostError('Telegram configuration: TELEGRAM_CHAT_ID is missing or invalid format.')
     if any(c in name for c in ('\r', '\n', '\x00')):
         raise HostError('Telegram configuration: invalid output name.')
-    mask(bot_token)
+
+    for tok in bot_token_list:
+        mask(tok)
     mask(chat_str)
     if api_hash:
         mask(str(api_hash))
 
+    primary_token = bot_token_list[0]
     size = file_size(path)
     part_limit = 1995 * 1024 * 1024  # 1995MB safe boundary below 2000MB Telegram limit
 
     if size > part_limit:
         import math, tempfile
         from pathlib import Path
+        from concurrent.futures import ThreadPoolExecutor
+
         num_parts = math.ceil(size / part_limit)
         print(f"Telegram file size is {round(size / (1024 * 1024), 1)}MB (>2000MB). Automatically splitting into {num_parts} parts.", flush=True)
 
@@ -336,10 +349,10 @@ def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, 
             total_duration = 7200.0  # fallback assumption 2 hours if probe unreadable
 
         part_duration = total_duration / num_parts
-        part_ids = []
         base_name = name.removesuffix('.mp4')
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            parts_info = []
             for i in range(num_parts):
                 part_path = Path(tmpdir) / f"{base_name}.part{i+1}.mp4"
                 start_sec = i * part_duration
@@ -348,21 +361,40 @@ def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, 
                     '-t', str(part_duration), '-c', 'copy', '-map', '0',
                     '-movflags', '+faststart', str(part_path)
                 ]
-                print(f"Splitting part {i+1} of {num_parts} (starts at {round(start_sec, 1)}s)...", flush=True)
+                print(f"Splitting part {i+1} of {num_parts} via stream-copy (starts at {round(start_sec, 1)}s)...", flush=True)
                 res = run(cmd, capture_output=True)
                 if res.returncode != 0:
                     raise HostError(f"FFmpeg split failed on part {i+1}.")
 
                 part_name = f"{base_name} - Part {i+1}.mp4"
-                print(f"Uploading part {i+1} of {num_parts} to Telegram...", flush=True)
-                p_id = _upload_telegram_single(part_path, part_name, bot_token, chat_str, api_id, api_hash, mask, run)
-                part_ids.append(p_id)
+                parts_info.append((i, part_path, part_name))
 
-        combined_id = "-".join(part_ids)
-        print(f"All {num_parts} parts uploaded to Telegram: {combined_id}", flush=True)
+            # MULTI-BOT PARALLEL UPLOADING
+            max_workers = min(num_parts, max(1, len(bot_token_list)))
+            if max_workers > 1:
+                print(f"Multi-Bot Speed Boost: Uploading {num_parts} parts concurrently across {max_workers} bots...", flush=True)
+            else:
+                print(f"Uploading {num_parts} parts to Telegram...", flush=True)
+
+            part_results = [None] * num_parts
+
+            def _upload_worker(idx, p_path, p_name):
+                assigned_tok = bot_token_list[idx % len(bot_token_list)]
+                bot_label = f"Bot #{idx % len(bot_token_list) + 1}" if len(bot_token_list) > 1 else "Telegram"
+                print(f"[{bot_label}] Starting upload of part {idx+1}/{num_parts}...", flush=True)
+                return idx, _upload_telegram_single(p_path, p_name, assigned_tok, chat_str, api_id, api_hash, mask, run)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_upload_worker, i, p_path, p_name) for i, p_path, p_name in parts_info]
+                for f in futures:
+                    idx, p_id = f.result()
+                    part_results[idx] = p_id
+
+        combined_id = "-".join(part_results)
+        print(f"All {num_parts} parts successfully uploaded to Telegram: {combined_id}", flush=True)
         return combined_id
 
-    return _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, mask, run)
+    return _upload_telegram_single(path, name, primary_token, chat_str, api_id, api_hash, mask, run)
 
 
 def verify_telegram(file_id, key, size, name, attempts=6, pause=time.sleep):
