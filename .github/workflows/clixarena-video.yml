@@ -23,7 +23,7 @@ on:
       runner_mode:
         description: Single runner (direct, fast, no chunk transfer) or Parallel (4 runners)
         required: false
-        default: parallel
+        default: single
         type: choice
         options:
           - single
@@ -75,7 +75,7 @@ on:
       crf:
         description: CRF 0-51 (lower = higher quality/larger file); auto uses High 18 or Balanced 23
         required: true
-        default: '18'
+        default: 'auto'
         type: string
       audio_track:
         description: auto, zero-based track number (0, 1...), or language code (eng, hin...)
@@ -89,7 +89,7 @@ on:
       title_animation:
         description: Enable title animation
         type: boolean
-        default: false
+        default: true
         required: true
       show_logo:
         description: Show English title logo (requires TMDB URL)
@@ -128,7 +128,7 @@ permissions:
   contents: write
   pull-requests: none
   issues: none
-  packages: read
+  packages: none
   id-token: none
 concurrency:
   group: clixarena-video-${{ github.run_id }}
@@ -137,11 +137,6 @@ jobs:
   encode:
     name: Download, audio selection and preparation
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 350
     outputs:
       distributed: ${{ steps.video.outputs.distributed }}
@@ -151,15 +146,12 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Verify pre-built environment
-        run: |
-          echo "Pre-built GHCR Container active: Zero download delay!"
-          ffmpeg -version | head -n 1
-          python3 -c "import pyrogram, tgcrypto, libtorrent; print('All libraries pre-installed and ready.')" 
+      - name: Install media tools
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
       - name: Download, validate, encode and upload
         id: video
         env:
-          RUNNER_MODE: ${{ fromJSON(inputs.overlay_layout || '{}').runnerMode || inputs.runner_mode || 'parallel' }}
+          RUNNER_MODE: ${{ fromJSON(inputs.overlay_layout || '{}').runnerMode || inputs.runner_mode || 'single' }}
           # Legacy test compatibility: DISTRIBUTED_PREPARE: 'true'
           DISTRIBUTED_PREPARE: 'false' 
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
@@ -185,14 +177,12 @@ jobs:
           OVERLAY_DURATION: ${{ inputs.overlay_duration }}
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
+          OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
+          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
-          TELEGRAM_BOT_TOKENS: ${{ secrets.TELEGRAM_BOT_TOKENS || secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: python3 -u scripts/clixarena_video.py
       - name: Stage source chunks concurrently
         if: ${{ steps.video.outputs.distributed == 'true' }}
@@ -261,15 +251,9 @@ jobs:
     needs: encode
     if: ${{ needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 300
     permissions:
       contents: read
-      packages: read
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -280,8 +264,8 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Verify pre-built FFmpeg
-        run: ffmpeg -version | head -n 1
+      - name: Install FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: parallel-source-${{ matrix.chunk }}
@@ -311,22 +295,20 @@ jobs:
     needs: encode
     if: ${{ needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 125
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Verify pre-built audio tools
-        run: ffmpeg -version | head -n 1
+      - name: Install audio tools
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: parallel-manifest
@@ -353,24 +335,14 @@ jobs:
     needs: [encode, chunks, companion]
     if: ${{ success() && needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/${{ github.repository_owner }}/clixarena-runner:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 350
-    permissions:
-      contents: write
-      packages: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Verify pre-built media tools
-        run: |
-          ffmpeg -version | head -n 1
-          python3 -c "import pyrogram, tgcrypto, cryptography; print('Finalize tools ready.')" 
+      - name: Install media and mapping tools
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: parallel-encoded-*
@@ -394,14 +366,12 @@ jobs:
           SUBTITLE_PATH: ${{ inputs.subtitle_path }}
           PORTAL_JOB_ID: ${{ inputs.job_id }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
+          OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
+          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
-          TELEGRAM_BOT_TOKENS: ${{ secrets.TELEGRAM_BOT_TOKENS || secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: python3 -u scripts/clixarena_distributed.py merge
       - name: Mapping receipt
         if: ${{ always() && !inputs.sample_only }}

@@ -212,7 +212,6 @@ def worker(index):
             filters=f'scale={cw}:{ch},setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setpts=PTS-STARTPTS'
             args+=['-map','0:v:0','-vf',filters]
         args+=['-an','-sn','-dn','-c:v','libx264','-preset',data['preset'],'-crf',str(data['crf']),'-pix_fmt','yuv420p','-fps_mode','passthrough','-map_metadata','-1']
-# Pure CRF master encoding: No artificial bitrate capping
         print(f'Encoding {data.get("method","soft")} chunk {index+1} of {data["count"]}',flush=True)
         encode_progress(args,float(metadata['format']['duration']),output=target)
     finally:os.chdir(previous)

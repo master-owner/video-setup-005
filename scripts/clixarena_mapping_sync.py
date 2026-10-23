@@ -104,23 +104,23 @@ def read_json(url,allow_404=False,headers=None,payload=None,stage='Provider read
 
 
 def abyss_auth():
-    """Use documented login/Bearer auth when configured; fall back gracefully to ABYSS_API_KEY."""
+    """Use documented login/Bearer auth when configured; never treat API keys as JWTs."""
     email,password=os.getenv('ABYSS_EMAIL',''),os.getenv('ABYSS_PASSWORD','')
     token=os.getenv('ABYSS_AUTH_TOKEN','')
-    if email and password:
-        try:
-            status,body=read_json('https://api.abyss.to/auth/login',payload={'email':email,'password':password},stage='Abyss login')
-            if status in (200,201) and isinstance(body,dict) and body.get('token'):
-                token=body['token']
-        except Exception:
-            pass  # Fall back to ABYSS_API_KEY
-    if token and isinstance(token,str) and len(token)<=16384 and all(32<ord(c)<127 for c in token):
+    if email or password:
+        if not email or not password:raise SyncError('Abyss login requires both ABYSS_EMAIL and ABYSS_PASSWORD')
+        status,body=read_json('https://api.abyss.to/auth/login',payload={'email':email,'password':password},stage='Abyss login')
+        if status not in (200,201) or not isinstance(body,dict):raise SyncError('Abyss login response could not be verified')
+        token=body.get('token','')
+        if not token:raise SyncError('Abyss login returned no token')
+    if token:
+        if not isinstance(token,str) or len(token)>16384 or any(ord(c)<33 or ord(c)>126 for c in token):
+            raise SyncError('Abyss authentication token format is invalid')
         mask(token)
         return '',{'Authorization':'Bearer '+token}
     key=os.getenv('ABYSS_API_KEY','')
-    if key:
-        return '?key='+urllib.parse.quote(key,safe=''),{}
-    raise SyncError('Abyss API key or login credentials are not configured')
+    if not key:raise SyncError('Abyss API key or login credentials are not configured')
+    return '?key='+urllib.parse.quote(key,safe=''),{}
 
 
 def abyss_account_verified(body):
@@ -229,7 +229,8 @@ def main():
             rows=decrypt_mappings(json.loads(base64.b64decode(current['content'])))
             missing,failed=collect_missing(rows)
             if failed:
-                print('::warning::Sync encountered issues for: ' + ', '.join(failed) + '. Mappings for these hosts were strictly preserved.')
+                print('::error::Sync incomplete. No mapping changes were saved for any host.')
+                return 1
             updated=prune(rows,missing)
             if updated==rows:print('Mapping sync: no changes.');return 1 if failed else 0
             content=json.dumps(encrypt_mappings(updated),indent=2)+'\n'

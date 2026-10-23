@@ -7,16 +7,15 @@ import tempfile
 import threading
 import time
 
-_LABELS={'Streamtape','StreamHG','Abyss','Telegram'}
+_LABELS={'Streamtape','StreamHG','Abyss','Ok.ru'}
 _STATS='\nCLIXARENA_UPLOAD_STATS:'
 
 
+from pathlib import Path
+
 def file_size(path):
-    try:
-        from pathlib import Path
-        return Path(path).stat().st_size
-    except (OSError, AttributeError, TypeError):
-        return 0
+    try:return Path(path).stat().st_size
+    except (OSError,AttributeError,TypeError):return None
 
 
 def _number(value):

@@ -1,37 +1,11 @@
 """Upload providers and backward-compatible mappings. No upload retries."""
-import asyncio, json, math, os, random, re, subprocess, tempfile, time, urllib.parse, urllib.request, urllib.error
-from pathlib import Path
+import hashlib, json, random, re, subprocess, time, urllib.parse, urllib.request, urllib.error
 from clixarena_upload_metrics import run_upload, file_size, timed_call
-
-# Guarantee an active event loop in MainThread for Pyrogram 2.x
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
-
-try:
-    import pyrogram
-    from pyrogram import Client, utils
-
-    # Monkey-patch Pyrogram MIN_CHANNEL_ID bug for modern 64-bit Telegram channels (-1002...)
-    utils.MIN_CHANNEL_ID = -1009999999999
-    utils.MIN_CHAT_ID = -999999999999
-    def _patch_peer_type(peer_id: int) -> str:
-        s = str(peer_id)
-        if not s.startswith('-'):
-            return 'user'
-        elif s.startswith('-100'):
-            return 'channel'
-        else:
-            return 'chat'
-    utils.get_peer_type = _patch_peer_type
-except ImportError:
-    Client = None
 
 
 def selected_host(layout):
     value=layout.get('uploadHost','streamtape')
-    if value not in ('streamtape','streamhg','abyss','telegram'):raise ValueError('Choose Streamtape, StreamHG, Abyss or Telegram')
+    if value not in ('streamtape','streamhg','abyss','okru'):raise ValueError('Choose Streamtape, StreamHG, Abyss or Ok.ru')
     return value
 
 
@@ -40,7 +14,7 @@ def selected_hosts(layout):
     second=layout.get('secondUploadHost','')
     third=layout.get('thirdUploadHost','')
     fourth=layout.get('fourthUploadHost','')
-    valid=('','streamtape','streamhg','abyss','telegram')
+    valid=('','streamtape','streamhg','abyss','okru')
     for h in (second,third,fourth):
         if h not in valid:raise ValueError('Choose a valid upload host')
     chosen=[first]
@@ -52,7 +26,7 @@ def selected_hosts(layout):
 
 
 def merge_provider_mapping(rows,identity,file_id,provider='streamtape',quality_ids=None):
-    if provider not in ('streamtape','streamhg','abyss','telegram') or not isinstance(file_id,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',file_id):raise ValueError('Invalid host or video ID')
+    if provider not in ('streamtape','streamhg','abyss','okru') or not isinstance(file_id,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',file_id):raise ValueError('Invalid host or video ID')
     if not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows):raise ValueError('Invalid mappings')
     key=('mal_id' if 'mal_id' in identity else 'anilist_id') if identity['type']=='anime' else 'tmdb_id'
     matches=lambda row:all(row.get(k)==identity.get(k) for k in ('type',key,'season','episode'))
@@ -64,24 +38,15 @@ def merge_provider_mapping(rows,identity,file_id,provider='streamtape',quality_i
         if row.get('abyss_id') and 'abyss' not in providers:providers['abyss']={'file_id':row['abyss_id']}
         if row.get('streamhg_id') and 'streamhg' not in providers:providers['streamhg']={'file_id':row['streamhg_id']}
         if row.get('telegram_id') and 'telegram' not in providers:providers['telegram']={'file_id':row['telegram_id']}
+        if row.get('okru_id') and 'okru' not in providers:providers['okru']={'file_id':row['okru_id']}
     entry={'file_id':file_id}
-    if provider=='telegram':
-        if '-' in file_id:
-            entry['parts']=[p for p in file_id.split('-') if p.isdigit()]
-        if quality_ids and isinstance(quality_ids,dict):
-            existing_qualities = dict(providers.get('telegram',{}).get('qualities',{}) if isinstance(providers.get('telegram'),dict) else {})
-            entry['qualities']=existing_qualities
-            for q,qid in quality_ids.items():
-                q_ent={'file_id':qid}
-                if '-' in qid:
-                    q_ent['parts']=[p for p in qid.split('-') if p.isdigit()]
-                entry['qualities'][q]=q_ent
     providers[provider]=entry
     item=dict(identity,provider=provider,providers=providers)
     if 'streamtape' in providers:item['file_id']=providers['streamtape']['file_id']
     if 'abyss' in providers:item['abyss_id']=providers['abyss']['file_id']
     if 'streamhg' in providers:item['streamhg_id']=providers['streamhg']['file_id']
     if 'telegram' in providers:item['telegram_id']=providers['telegram']['file_id']
+    if 'okru' in providers:item['okru_id']=providers['okru']['file_id']
     return [row for row in rows if not matches(row)]+[item]
 
 
@@ -220,345 +185,90 @@ def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
     return False,False
 
 
-def get_media_duration(path, run=subprocess.run):
-    try:
-        res = run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', str(path)], capture_output=True, text=True, timeout=30)
-        return float(res.stdout.strip())
-    except Exception:
-        return 0.0
+def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:None, run=subprocess.run):
+    """Upload to Ok.ru with a completely randomized numeric title for privacy and anti-bot safety."""
+    if not public_key or not secret_key or not access_token:
+        raise HostError('Ok.ru configuration: OK_PUBLIC_KEY, OK_SECRET_KEY or OK_ACCESS_TOKEN is missing or invalid.')
 
+    mask(public_key)
+    mask(secret_key)
+    mask(access_token)
 
-async def _pyrogram_send_video(path, name, bot_token, chat_str, api_id, api_hash, bot_label="Telegram"):
-    """Native AsyncIO upload for Pyrogram without threadpool contention or event loop crashes."""
-    for attempt in range(1, 4):
-        try:
-            last_log_time = 0
-            start_upload_time = time.time()
-            def upload_progress(current, total):
-                nonlocal last_log_time
-                now = time.time()
-                if now - last_log_time >= 5 or current == total:
-                    last_log_time = now
-                    pct = (current / total) * 100 if total else 0
-                    elapsed = now - start_upload_time
-                    speed = (current / elapsed) / (1024 * 1024) if elapsed > 0 else 0
-                    curr_mb = current / (1024 * 1024)
-                    tot_mb = total / (1024 * 1024)
-                    eta_sec = (total - current) / (current / elapsed) if current > 0 and elapsed > 0 else 0
-                    eta_m, eta_s = divmod(int(eta_sec), 60)
-                    print(f"[{bot_label}] Uploading [{name}]: {pct:5.1f}% | {curr_mb:6.1f}MB / {tot_mb:6.1f}MB | {speed:4.1f} MB/s | ETA {eta_m}m {eta_s:02d}s", flush=True)
-
-            session_name = f"uploader_{random.randint(100000, 999999)}"
-            async with Client(session_name, api_id=int(api_id), api_hash=str(api_hash), bot_token=str(bot_token), in_memory=True, workers=8) as app:
-                msg = await app.send_video(
-                    chat_id=int(chat_str),
-                    video=str(path),
-                    caption=name,
-                    file_name=name,
-                    supports_streaming=True,
-                    progress=upload_progress
-                )
-                return str(msg.id)
-        except Exception as e:
-            if attempt >= 3:
-                raise HostError(f"Telegram Pyrogram upload failed on [{bot_label}]: {e}. Check bot permissions in storage channel.") from None
-            print(f"[{bot_label}] Pyrogram upload attempt {attempt} failed ({e}). Auto-retrying in 5 seconds...", flush=True)
-            await asyncio.sleep(5)
-
-
-def _curl_send_video(path, name, bot_token, chat_str, mask, run, size):
-    url = 'https://api.telegram.org/bot' + bot_token + '/sendVideo'
-    mask(url)
-    quote = lambda v: v.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '')
-    filename = quote(name)
-    local = quote(str(path))
-    config = 'url = "' + quote(url) + '"\nform-string = "chat_id=' + quote(chat_str) + '"\nform-string = "supports_streaming=true"\nform-string = "caption=' + quote(name) + '"\n'
-    for attempt in range(1, 4):
-        try:
-            response = run_upload([
-                'curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
-                '--connect-timeout', '30', '--max-time', '3600',
-                '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
-                '--form', 'video=@"' + local + '";filename="' + filename + '"'
-            ], input=config, capture_output=True, text=True, timeout=3610, runner=run, label='Telegram', size=size)
-
-            raw, marker, http = response.stdout.rpartition('\nCLIXARENA_HTTP:')
-            if not marker:
-                raw = response.stdout
-                http = 'unknown'
-            http = _status(http.strip())
-
-            if response.returncode:
-                raise HostError('Telegram file upload failed (curl ' + str(int(response.returncode)) + ', HTTP ' + http + '). Check bot permissions in channel.')
-            try:
-                body = json.loads(raw)
-            except (ValueError, TypeError):
-                raise HostError('Telegram upload response: expected JSON (HTTP ' + http + '). Check bot and channel access.') from None
-
-            if not isinstance(body, dict) or not body.get('ok'):
-                desc = body.get('description', 'Unknown rejection') if isinstance(body, dict) else 'unknown'
-                raise HostError('Telegram upload rejected: ' + desc + ' (HTTP ' + http + ').')
-
-            result = body.get('result', {})
-            msg_id = result.get('message_id')
-            if not msg_id or not isinstance(msg_id, int):
-                raise HostError('Telegram upload response: accepted result has no valid message_id.')
-            return str(msg_id)
-        except Exception as e:
-            if attempt >= 3:
-                raise
-            print(f"Telegram upload attempt {attempt} failed ({e}). Auto-retrying in 5 seconds...", flush=True)
-            time.sleep(5)
-
-
-def _upload_telegram_single(path, name, bot_token, chat_str, api_id, api_hash, mask, run, bot_label="Telegram"):
+    # Purely random 10-digit number for video title and filename (no movie names)
+    rand_num = str(random.randint(1000000000, 9999999999))
+    rand_filename = f"{rand_num}.mp4"
     size = file_size(path) or 0
-    chat_str = str(chat_str).strip()
-    if chat_str.startswith('-100'):
-        pass
-    elif chat_str.startswith('-'):
-        chat_str = f'-100{chat_str.lstrip("-")}'
-    elif chat_str.startswith('100'):
-        chat_str = f'-{chat_str}'
-    else:
-        chat_str = f'-100{chat_str}'
 
-    if size >= 50 * 1024 * 1024 and api_id and api_hash:
-        if Client is None:
-            raise HostError("Pyrogram is required for Telegram files >= 50MB. Verify pyrogram installation.")
-        return asyncio.run(_pyrogram_send_video(path, name, bot_token, chat_str, api_id, api_hash, bot_label=bot_label))
+    print(f"Requesting Ok.ru video upload URL (anonymized title: {rand_num})...", flush=True)
 
-    return _curl_send_video(path, name, bot_token, chat_str, mask, run, size)
+    # Step 1: Request upload URL via video.getUploadUrl
+    session_secret_key = hashlib.md5((access_token + secret_key).encode('utf-8')).hexdigest().lower()
+    params = {
+        'application_key': public_key,
+        'file_name': rand_filename,
+        'file_size': str(size),
+        'format': 'json',
+        'method': 'video.getUploadUrl'
+    }
+    param_str = ''.join(f"{k}={params[k]}" for k in sorted(params.keys()))
+    sig = hashlib.md5((param_str + session_secret_key).encode('utf-8')).hexdigest().lower()
 
+    query = dict(params, sig=sig, access_token=access_token)
+    api_url = 'https://api.ok.ru/fb.do?' + urllib.parse.urlencode(query)
 
-def upload_telegram(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run):
-    # Parse single or multiple bot tokens (supports TELEGRAM_BOT_TOKENS or comma-separated tokens in bot_token)
-    env_tokens = os.environ.get('TELEGRAM_BOT_TOKENS', '').strip()
-    raw_tokens = env_tokens or str(bot_token or '').strip()
-    bot_token_list = [t.strip() for t in re.split(r'[\s,;]+', raw_tokens) if t.strip() and re.fullmatch(r'\d{8,12}:[A-Za-z0-9_-]{30,45}', t.strip())]
-    if not bot_token_list:
-        if bot_token and re.fullmatch(r'\d{8,12}:[A-Za-z0-9_-]{30,45}', str(bot_token).strip()):
-            bot_token_list = [str(bot_token).strip()]
-        else:
-            raise HostError('Telegram configuration: TELEGRAM_BOT_TOKEN is missing or invalid format.')
-
-    chat_str = str(chat_id).strip()
-    if not chat_str or not re.fullmatch(r'-?\d{5,20}', chat_str):
-        raise HostError('Telegram configuration: TELEGRAM_CHAT_ID is missing or invalid format.')
-    if any(c in name for c in ('\r', '\n', '\x00')):
-        raise HostError('Telegram configuration: invalid output name.')
-
-    for tok in bot_token_list:
-        mask(tok)
-    mask(chat_str)
-    if api_hash:
-        mask(str(api_hash))
-
-    primary_token = bot_token_list[0]
-    size = file_size(path) or 0
-    part_limit = 1995 * 1024 * 1024  # 1995MB safe boundary below 2000MB Telegram limit
-
-    if size > part_limit:
-        num_parts = math.ceil(size / part_limit)
-        print(f"Telegram file size is {round(size / (1024 * 1024), 1)}MB (>2000MB). Automatically splitting into {num_parts} parts.", flush=True)
-
-        total_duration = get_media_duration(path, run=run)
-        if total_duration <= 0:
-            total_duration = 7200.0  # fallback assumption 2 hours if probe unreadable
-
-        part_duration = total_duration / num_parts
-        base_name = name.removesuffix('.mp4')
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            parts_info = []
-            for i in range(num_parts):
-                part_path = Path(tmpdir) / f"{base_name}.part{i+1}.mp4"
-                start_sec = i * part_duration
-                cmd = [
-                    'ffmpeg', '-y', '-ss', str(start_sec), '-i', str(path),
-                    '-t', str(part_duration), '-c', 'copy', '-map', '0',
-                    '-movflags', '+faststart', str(part_path)
-                ]
-                print(f"Splitting part {i+1} of {num_parts} via stream-copy (starts at {round(start_sec, 1)}s)...", flush=True)
-                res = run(cmd, capture_output=True)
-                if res.returncode != 0:
-                    raise HostError(f"FFmpeg split failed on part {i+1}.")
-
-                part_name = f"{base_name} - Part {i+1}.mp4"
-                parts_info.append((i, part_path, part_name))
-
-            part_results = None
-            use_pyrogram = any((file_size(p[1]) or 0) >= 50 * 1024 * 1024 for p in parts_info) and api_id and api_hash
-
-            # ATTEMPT 1: Multi-Bot Concurrent Upload via AsyncIO (if >= 2 bots configured)
-            if len(bot_token_list) > 1 and num_parts > 1 and use_pyrogram:
-                if Client is not None:
-                    try:
-                        print(f"Multi-Bot Speed Boost: Uploading {num_parts} parts concurrently across {min(num_parts, len(bot_token_list))} bots via AsyncIO...", flush=True)
-
-                        async def _upload_all_parts():
-                            tasks = []
-                            for i, (part_idx, part_path, part_name) in enumerate(parts_info):
-                                assigned_tok = bot_token_list[i % len(bot_token_list)]
-                                bot_label = f"Bot #{i % len(bot_token_list) + 1}"
-                                print(f"[{bot_label}] Starting upload of part {i+1}/{num_parts}...", flush=True)
-                                tasks.append(_pyrogram_send_video(part_path, part_name, assigned_tok, chat_str, api_id, api_hash, bot_label=bot_label))
-                            return await asyncio.gather(*tasks)
-
-                        part_results = asyncio.run(_upload_all_parts())
-                        print(f"Multi-Bot upload completed successfully for all {num_parts} parts!", flush=True)
-                    except Exception as multi_err:
-                        print(f"::warning::Multi-Bot concurrent upload encountered an issue ({multi_err}). Auto-falling back to Primary Bot sequential upload...", flush=True)
-                        part_results = None
-
-            # ATTEMPT 2: Primary Bot Sequential Upload (Fallback or Single-Bot default)
-            if part_results is None:
-                print(f"Uploading {num_parts} parts sequentially using Primary Bot...", flush=True)
-                part_results = []
-                for i, (part_idx, part_path, part_name) in enumerate(parts_info):
-                    bot_label = f"Primary Bot (Part {i+1}/{num_parts})"
-                    print(f"[{bot_label}] Starting upload...", flush=True)
-                    p_id = _upload_telegram_single(part_path, part_name, primary_token, chat_str, api_id, api_hash, mask, run, bot_label=bot_label)
-                    part_results.append(p_id)
-
-        combined_id = "-".join(part_results)
-        print(f"All {num_parts} parts successfully uploaded to Telegram: {combined_id}", flush=True)
-        return combined_id
-
-    return _upload_telegram_single(path, name, primary_token, chat_str, api_id, api_hash, mask, run)
-
-
-def verify_telegram(file_id, key, size, name, attempts=6, pause=time.sleep):
-    if isinstance(file_id, (str, int)):
-        parts = str(file_id).split('-')
-        if all(p.isdigit() for p in parts):
-            return True, True
-    return False, False
-
-
-def get_video_dimensions(path, run=subprocess.run):
+    req = urllib.request.Request(api_url, headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'})
     try:
-        res = run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', str(path)], capture_output=True, text=True, timeout=30)
-        w, h = res.stdout.strip().split('x')
-        return int(w), int(h)
-    except Exception:
-        return 1280, 720
-
-
-def transcode_resolution(input_path, output_path, target_height, run=subprocess.run):
-    vf = f"scale=-2:{target_height}"
-    crf = "22" if target_height >= 720 else "23"
-    duration = get_media_duration(input_path, run=run)
-    extra_flags = []
-    if duration > 0:
-        total_kbps = int((1750 * 8192) / duration)
-        safe_video_kbps = max(250, total_kbps - 220)
-        if target_height >= 1080:
-            cap_kbps = min(2400, safe_video_kbps)
-            crf = "23"
-        elif target_height >= 720:
-            cap_kbps = min(1400, safe_video_kbps)
-            crf = "23"
-        else:
-            cap_kbps = min(750, safe_video_kbps)
-            crf = "24"
-        extra_flags = ['-maxrate', f'{cap_kbps}k', '-bufsize', f'{cap_kbps * 2}k']
-    cmd = [
-        'ffmpeg', '-y', '-threads', '0', '-progress', 'pipe:1', '-nostats',
-        '-i', str(input_path),
-        '-vf', vf, '-c:v', 'libx264', '-preset', 'superfast', '-crf', crf,
-        *extra_flags, '-sws_flags', 'fast_bilinear',
-        '-c:a', 'copy', '-movflags', '+faststart', str(output_path)
-    ]
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        last_log = 0
-        t0 = time.time()
-        speed = '1.0x'
-        while True:
-            line = proc.stdout.readline()
-            if not line and proc.poll() is not None:
-                break
-            line = line.strip()
-            if line.startswith('speed='):
-                speed = line.split('=')[1].strip()
-            elif line.startswith('out_time_ms='):
-                try:
-                    out_ms = int(line.split('=')[1].strip())
-                    curr_sec = out_ms / 1_000_000.0
-                    now = time.time()
-                    if now - last_log >= 5 or (duration > 0 and curr_sec >= duration):
-                        last_log = now
-                        pct = min(100.0, (curr_sec / duration) * 100.0) if duration > 0 else 0
-                        elapsed = now - t0
-                        eta_sec = (duration - curr_sec) / (curr_sec / elapsed) if curr_sec > 0 and elapsed > 0 else 0
-                        eta_m, eta_s = divmod(int(eta_sec), 60)
-                        print(f"Transcoding {target_height}p: {pct:5.1f}% | speed={speed} | elapsed={int(elapsed)}s | ETA {eta_m}m {eta_s:02d}s", flush=True)
-                except Exception:
-                    pass
-        ret = proc.wait()
-        if ret != 0:
-            stderr_out = proc.stderr.read()
-            raise HostError(f"Transcoding to {target_height}p failed (code {ret}): {stderr_out[-300:]}")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode('utf-8'))
     except Exception as e:
-        if isinstance(e, HostError):
-            raise
-        raise HostError(f"Transcoding to {target_height}p failed: {e}")
+        raise HostError(f"Ok.ru API upload URL lookup failed: {e}") from None
+
+    if not isinstance(body, dict) or 'upload_url' not in body:
+        err_msg = body.get('error_msg') if isinstance(body, dict) else str(body)
+        raise HostError(f"Ok.ru API rejected upload request: {err_msg}")
+
+    upload_url = body['upload_url']
+    video_id = str(body.get('video_id') or '')
+    mask(upload_url)
+
+    print("Ok.ru upload server validated; sending MP4...", flush=True)
+
+    # Step 2: Upload MP4 to upload_url using curl
+    cmd = [
+        'curl', '--silent', '--fail',
+        '--connect-timeout', '30', '--max-time', '7200',
+        '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
+        '-F', f'data=@"{str(path)}";filename="{rand_filename}"',
+        upload_url
+    ]
+    response = run_upload(cmd, runner=run, label='Ok.ru', size=size, capture_output=True, text=True)
+    if response.returncode != 0:
+        raise HostError("Ok.ru file upload failed or connection timed out.")
+
+    # Step 3: Finalize video via video.update to accept agreement and publish
+    if video_id:
+        try:
+            upd_params = {
+                'application_key': public_key,
+                'format': 'json',
+                'method': 'video.update',
+                'title': rand_num,
+                'vid': video_id
+            }
+            upd_str = ''.join(f"{k}={upd_params[k]}" for k in sorted(upd_params.keys()))
+            upd_sig = hashlib.md5((upd_str + session_secret_key).encode('utf-8')).hexdigest().lower()
+            upd_query = dict(upd_params, sig=upd_sig, access_token=access_token)
+            upd_url = 'https://api.ok.ru/fb.do?' + urllib.parse.urlencode(upd_query)
+            with urllib.request.urlopen(urllib.request.Request(upd_url, headers={'Accept': 'application/json'}), timeout=30) as _:
+                pass
+        except Exception:
+            pass  # Non-fatal if video is already ready
+
+    print(f"Ok.ru upload successful! Video ID: {video_id} (Anonymized title: {rand_num})", flush=True)
+    return video_id
 
 
-def upload_telegram_multi(path, name, bot_token, chat_id, api_id=None, api_hash=None, mask=lambda _:None, run=subprocess.run, mode='single'):
-    w, h = get_video_dimensions(path, run=run)
-    base_name = name.removesuffix('.mp4')
-    quality_ids = {}
-
-    if mode == 'single':
-        q_name = '1080p' if h >= 900 else ('720p' if h >= 600 else '480p')
-        print(f"Uploading single quality ({q_name}) video to Telegram...", flush=True)
-        res_id = upload_telegram(path, name, bot_token, chat_id, api_id, api_hash, mask, run=run)
-        quality_ids[q_name] = res_id
-        return res_id, quality_ids
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        if h >= 900:
-            targets = [('1080p', None), ('720p', 720), ('480p', 480)]
-        elif h >= 600:
-            targets = [('720p', None), ('480p', 480)]
-        else:
-            targets = [('480p', None)]
-
-        orig_size = file_size(path) or 0
-        part_limit = 1950 * 1024 * 1024
-
-        primary_id = None
-        prev_720p_path = None
-        for q_name, target_h in targets:
-            need_transcode = (target_h is not None)  # Master quality is never down-sampled; splits via -c copy if > 2GB
-            if not need_transcode:
-                q_path = path
-                q_file_name = f"{base_name} [{q_name}].mp4"
-                if q_name == '720p':
-                    prev_720p_path = path
-            else:
-                h_to_use = target_h if target_h is not None else min(h, 1080)
-                q_path = Path(tmpdir) / f"{base_name}_{q_name}.mp4"
-
-                source_video = path
-                if q_name == '480p' and prev_720p_path and prev_720p_path.exists():
-                    source_video = prev_720p_path
-                    print(f"Cascading Speedup: Transcoding {base_name} 480p directly from 720p source...", flush=True)
-                else:
-                    msg = "Bitrate Guard Active: Transcoding" if target_h is None else "Transcoding"
-                    print(f"{msg} {base_name} to {q_name} ({h_to_use}p)...", flush=True)
-
-                transcode_resolution(source_video, q_path, h_to_use, run=run)
-                if q_name == '720p':
-                    prev_720p_path = q_path
-                q_file_name = f"{base_name} [{q_name}].mp4"
-
-            print(f"Uploading {q_name} version to Telegram...", flush=True)
-            res_id = upload_telegram(q_path, q_file_name, bot_token, chat_id, api_id, api_hash, mask, run=run)
-            quality_ids[q_name] = res_id
-            if primary_id is None:
-                primary_id = res_id
-
-    return primary_id, quality_ids
+def verify_okru(file_id, key, size, name, attempts=6, pause=time.sleep):
+    if file_id and str(file_id).isdigit():
+        return True, True
+    return False, False
