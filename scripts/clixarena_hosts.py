@@ -214,6 +214,7 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
 
     params = {
         'application_key': public_key,
+        'attachment_type': 'MOVIE',
         'file_name': rand_filename,
         'file_size': str(size),
         'format': 'json',
@@ -283,26 +284,40 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
                 start_byte = offset
                 end_byte = offset + chunk_len - 1
                 content_range = f"bytes {start_byte}-{end_byte}/{size}"
+
+                chunk_uploaded = False
+                last_chunk_err = None
+
+                for attempt in range(3):
+                    req = urllib.request.Request(
+                        upload_url,
+                        data=chunk,
+                        headers={
+                            'Content-Type': 'application/octet-stream',
+                            'Content-Range': content_range,
+                            'User-Agent': 'Mozilla/5.0'
+                        },
+                        method='POST'
+                    )
+                    try:
+                        with opener.open(req, timeout=300) as resp:
+                            status = getattr(resp, 'status', getattr(resp, 'code', None))
+                            raw_body = resp.read()
+                            if status in (200, 201):
+                                chunk_uploaded = True
+                                break
+                            else:
+                                err_detail = raw_body.decode('utf-8', errors='ignore')[:200]
+                                last_chunk_err = f"HTTP {status} {err_detail}".strip()
+                    except Exception as e:
+                        last_chunk_err = str(e)
+
+                    time.sleep(2)
+
+                if not chunk_uploaded:
+                    raise HostError(f"Ok.ru renewable chunk upload failed at {content_range}: {last_chunk_err}")
+
                 offset += chunk_len
-
-                req = urllib.request.Request(
-                    upload_url,
-                    data=chunk,
-                    headers={
-                        'Content-Type': 'video/mp4',
-                        'Content-Range': content_range,
-                        'User-Agent': 'Mozilla/5.0'
-                    },
-                    method='POST'
-                )
-                try:
-                    with opener.open(req, timeout=300) as resp:
-                        # 201 Created = partial range accepted, 200 OK = finished
-                        if resp.status not in (200, 201):
-                            raise HostError(f"Ok.ru renewable upload rejected chunk {content_range} with HTTP {resp.status}")
-                except Exception as e:
-                    raise HostError(f"Ok.ru renewable chunk upload failed at {content_range}: {e}") from None
-
                 percent = (offset * 100) // size
                 print(f"Ok.ru uploaded {offset/1024**2:.1f} / {size/1024**2:.1f} MiB ({percent}%)", flush=True)
 
