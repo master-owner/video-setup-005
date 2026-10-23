@@ -1,1 +1,1 @@
-{"job": "787a0eeb21104995bd01340c710167b9", "run_id": "39887176581", "status": "waiting_audio", "tracks": [{"index": 0, "language": "hin", "channels": 2, "codec": "aac"}, {"index": 1, "language": "tel", "channels": 6, "codec": "eac3"}], "expires_at": 1792721483}
+{"job":"787a0eeb21104995bd01340c710167b9","run_id":"39887176581","status":"selected","tracks":[{"index":0,"language":"hin","channels":2,"codec":"aac"},{"index":1,"language":"tel","channels":6,"codec":"eac3"}],"expires_at":1792721483,"selected":1}
