@@ -7045,4 +7045,3 @@
 02:08:48,000 --> 02:08:58,000
 <b><font color="#00ffff">සිංහල උපසිරැසි ගැන්වීම</font></b>
 <b><font color="#ffff00">Clixarena Team</font></b>
-<i><font color="#ffffff">www.clixarena.com</font></i>
