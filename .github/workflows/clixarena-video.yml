@@ -146,12 +146,29 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Setup media tools
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ffmpeg
+            /usr/local/bin/ffprobe
+          key: ffmpeg-static-v7-linux64
+      - name: Setup FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          # Fast check: install only if not already cached
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            echo "Installing FFmpeg..."
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent
+            echo "Installing static FFmpeg..."
+            if ! (curl -sL --connect-timeout 15 --max-time 120 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'); then
+              echo "Static download failed; fallback to apt..."
+              sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core fonts-noto-core
+            fi
+            sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
+          fi
+      - name: Setup python tools
+        run: |
+          if ! python3 -c "import libtorrent" 2>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent
           fi
       - name: Download, validate, encode and upload
         id: video
@@ -269,10 +286,24 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ffmpeg
+            /usr/local/bin/ffprobe
+          key: ffmpeg-static-v7-linux64
       - name: Setup FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          if ! command -v ffmpeg >/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core fonts-noto-core
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            echo "Installing static FFmpeg..."
+            if ! (curl -sL --connect-timeout 15 --max-time 120 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'); then
+              echo "Static download failed; fallback to apt..."
+              sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core fonts-noto-core
+            fi
+            sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -311,11 +342,24 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ffmpeg
+            /usr/local/bin/ffprobe
+          key: ffmpeg-static-v7-linux64
       - name: Install audio tools
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg
+            echo "Installing static FFmpeg..."
+            if ! (curl -sL --connect-timeout 15 --max-time 120 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'); then
+              echo "Static download failed; fallback to apt..."
+              sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+            fi
+            sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -349,10 +393,24 @@ jobs:
         with:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
-      - name: Setup media and mapping tools
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ffmpeg
+            /usr/local/bin/ffprobe
+          key: ffmpeg-static-v7-linux64
+      - name: Setup media tools
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          if ! command -v ffmpeg >/dev/null || ! python3 -c "import cryptography, libtorrent" 2>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg python3-cryptography python3-libtorrent
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            echo "Installing static FFmpeg..."
+            if ! (curl -sL --connect-timeout 15 --max-time 120 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'); then
+              echo "Static download failed; fallback to apt..."
+              sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+            fi
+            sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
