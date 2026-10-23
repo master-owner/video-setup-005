@@ -214,7 +214,7 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
 
     params = {
         'application_key': public_key,
-        'attachment_type': 'MOVIE',
+        'direct_link_access': 'true',
         'file_name': rand_filename,
         'file_size': str(size),
         'format': 'json',
@@ -265,23 +265,40 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
         raise HostError("Ok.ru file upload failed or connection timed out.")
 
     # Step 3: Finalize video via video.update to accept agreement and publish
-    if video_id and active_session_secret:
-        try:
-            upd_params = {
-                'application_key': public_key,
-                'format': 'json',
-                'method': 'video.update',
-                'title': rand_num,
-                'vid': video_id
-            }
-            upd_str = ''.join(f"{k}={upd_params[k]}" for k in sorted(upd_params.keys()))
-            upd_sig = hashlib.md5((upd_str + active_session_secret).encode('utf-8')).hexdigest().lower()
+    if video_id:
+        print(f"Finalizing Ok.ru video {video_id} (accepting agreement and publishing as PUBLIC)...", flush=True)
+        upd_params = {
+            'application_key': public_key,
+            'format': 'json',
+            'method': 'video.update',
+            'privacy': 'PUBLIC',
+            'title': rand_num,
+            'vid': video_id
+        }
+        upd_str = ''.join(f"{k}={upd_params[k]}" for k in sorted(upd_params.keys()))
+        upd_success = False
+        upd_last_err = ''
+
+        secrets_to_try = [active_session_secret] if active_session_secret else []
+        for s in possible_session_secrets:
+            if s not in secrets_to_try:
+                secrets_to_try.append(s)
+
+        for candidate_secret in secrets_to_try:
+            upd_sig = hashlib.md5((upd_str + candidate_secret).encode('utf-8')).hexdigest().lower()
             upd_query = dict(upd_params, sig=upd_sig, access_token=access_token)
             upd_url = 'https://api.ok.ru/fb.do?' + urllib.parse.urlencode(upd_query)
-            with urllib.request.urlopen(urllib.request.Request(upd_url, headers={'Accept': 'application/json'}), timeout=30) as _:
-                pass
-        except Exception:
-            pass
+            try:
+                with urllib.request.urlopen(urllib.request.Request(upd_url, headers={'Accept': 'application/json'}), timeout=30) as resp:
+                    raw_resp = resp.read().decode('utf-8')
+                    print(f"Ok.ru video.update result: {raw_resp or 'OK'}", flush=True)
+                    upd_success = True
+                    break
+            except Exception as e:
+                upd_last_err = str(e)
+
+        if not upd_success:
+            print(f"::warning::Ok.ru video.update could not finalize: {upd_last_err}", flush=True)
 
     print(f"Ok.ru upload successful! Video ID: {video_id} (Anonymized title: {rand_num})", flush=True)
     return video_id
