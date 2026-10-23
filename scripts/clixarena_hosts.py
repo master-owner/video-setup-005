@@ -267,6 +267,12 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
     else:
         print(f"File size ({size/1024**3:.2f} GB) exceeds 2GB limit; using Ok.ru Renewable (Chunked) upload...", flush=True)
         chunk_size = 32 * 1024 * 1024  # 32MB chunks
+        class OkruStatusHandler(urllib.request.HTTPErrorProcessor):
+            def http_response(self, request, response):
+                return response
+            https_response = http_response
+
+        opener = urllib.request.build_opener(OkruStatusHandler)
         with open(path, 'rb') as f:
             offset = 0
             while offset < size:
@@ -279,19 +285,26 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
                 content_range = f"bytes {start_byte}-{end_byte}/{size}"
                 offset += chunk_len
 
-                cmd = [
-                    'curl', '--silent', '--fail',
-                    '--connect-timeout', '30', '--max-time', '600',
-                    '-X', 'POST',
-                    '-H', 'Content-Type: video/mp4',
-                    '-H', f'Content-Range: {content_range}',
-                    '--data-binary', '@-',
-                    upload_url
-                ]
-                res = run(cmd, input=chunk, capture_output=True)
-                if res.returncode != 0:
-                    raise HostError(f"Ok.ru renewable chunk upload failed at {content_range}")
-                print(f"Ok.ru uploaded {offset/1024**2:.1f} / {size/1024**2:.1f} MiB ({offset*100//size}%)", flush=True)
+                req = urllib.request.Request(
+                    upload_url,
+                    data=chunk,
+                    headers={
+                        'Content-Type': 'video/mp4',
+                        'Content-Range': content_range,
+                        'User-Agent': 'Mozilla/5.0'
+                    },
+                    method='POST'
+                )
+                try:
+                    with opener.open(req, timeout=300) as resp:
+                        # 201 Created = partial range accepted, 200 OK = finished
+                        if resp.status not in (200, 201):
+                            raise HostError(f"Ok.ru renewable upload rejected chunk {content_range} with HTTP {resp.status}")
+                except Exception as e:
+                    raise HostError(f"Ok.ru renewable chunk upload failed at {content_range}: {e}") from None
+
+                percent = (offset * 100) // size
+                print(f"Ok.ru uploaded {offset/1024**2:.1f} / {size/1024**2:.1f} MiB ({percent}%)", flush=True)
 
     # Step 3: Finalize video via video.update to accept agreement and publish
     if video_id and active_session_secret:
