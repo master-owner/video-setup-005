@@ -186,7 +186,7 @@ def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
 
 
 def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:None, run=subprocess.run):
-    """Upload to Ok.ru with a completely randomized numeric title for privacy and anti-bot safety."""
+    """Upload to Ok.ru with randomized numeric title. Supports files > 2GB via Renewable upload."""
     if not public_key or not secret_key or not access_token:
         raise HostError('Ok.ru configuration: OK_PUBLIC_KEY, OK_SECRET_KEY or OK_ACCESS_TOKEN is missing or invalid.')
 
@@ -194,15 +194,24 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
     mask(secret_key)
     mask(access_token)
 
-    # Purely random 10-digit number for video title and filename (no movie names)
     rand_num = str(random.randint(1000000000, 9999999999))
     rand_filename = f"{rand_num}.mp4"
     size = file_size(path) or 0
 
     print(f"Requesting Ok.ru video upload URL (anonymized title: {rand_num})...", flush=True)
 
-    # Step 1: Request upload URL via video.getUploadUrl
-    session_secret_key = hashlib.md5((access_token + secret_key).encode('utf-8')).hexdigest().lower()
+    # Calculate session_secret_key:
+    # 1. If secret_key is already the 32-hex session_secret_key from redirect URL: use directly
+    # 2. Standard derivation: md5(access_token + secret_key)
+    possible_session_secrets = []
+    if re.fullmatch(r'[a-fA-F0-9]{32}', secret_key.strip()):
+        possible_session_secrets.append(secret_key.strip().lower())
+    derived = hashlib.md5((access_token + secret_key).encode('utf-8')).hexdigest().lower()
+    if derived not in possible_session_secrets:
+        possible_session_secrets.append(derived)
+    if secret_key.strip().lower() not in possible_session_secrets:
+        possible_session_secrets.append(secret_key.strip().lower())
+
     params = {
         'application_key': public_key,
         'file_name': rand_filename,
@@ -211,42 +220,81 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
         'method': 'video.getUploadUrl'
     }
     param_str = ''.join(f"{k}={params[k]}" for k in sorted(params.keys()))
-    sig = hashlib.md5((param_str + session_secret_key).encode('utf-8')).hexdigest().lower()
 
-    query = dict(params, sig=sig, access_token=access_token)
-    api_url = 'https://api.ok.ru/fb.do?' + urllib.parse.urlencode(query)
+    upload_url = None
+    video_id = ''
+    last_err = 'No response'
+    active_session_secret = None
 
-    req = urllib.request.Request(api_url, headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode('utf-8'))
-    except Exception as e:
-        raise HostError(f"Ok.ru API upload URL lookup failed: {e}") from None
+    for candidate_secret in possible_session_secrets:
+        sig = hashlib.md5((param_str + candidate_secret).encode('utf-8')).hexdigest().lower()
+        query = dict(params, sig=sig, access_token=access_token)
+        api_url = 'https://api.ok.ru/fb.do?' + urllib.parse.urlencode(query)
 
-    if not isinstance(body, dict) or 'upload_url' not in body:
-        err_msg = body.get('error_msg') if isinstance(body, dict) else str(body)
-        raise HostError(f"Ok.ru API rejected upload request: {err_msg}")
+        req = urllib.request.Request(api_url, headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode('utf-8'))
+                if isinstance(body, dict) and 'upload_url' in body:
+                    upload_url = body['upload_url']
+                    video_id = str(body.get('video_id') or '')
+                    active_session_secret = candidate_secret
+                    break
+                else:
+                    last_err = body.get('error_msg') if isinstance(body, dict) else str(body)
+        except Exception as e:
+            last_err = str(e)
 
-    upload_url = body['upload_url']
-    video_id = str(body.get('video_id') or '')
+    if not upload_url:
+        raise HostError(f"Ok.ru API rejected upload request: {last_err}")
+
     mask(upload_url)
+    print(f"Ok.ru upload server validated (video_id: {video_id}); sending MP4...", flush=True)
 
-    print("Ok.ru upload server validated; sending MP4...", flush=True)
+    # Step 2: Upload MP4 to upload_url
+    two_gb = 2 * 1024 * 1024 * 1024
+    if size < two_gb:
+        cmd = [
+            'curl', '--silent', '--fail',
+            '--connect-timeout', '30', '--max-time', '7200',
+            '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
+            '-F', f'data=@"{str(path)}";filename="{rand_filename}"',
+            upload_url
+        ]
+        response = run_upload(cmd, input='', runner=run, label='Ok.ru', size=size, capture_output=True, text=True)
+        if response.returncode != 0:
+            raise HostError("Ok.ru file upload failed or connection timed out.")
+    else:
+        print(f"File size ({size/1024**3:.2f} GB) exceeds 2GB limit; using Ok.ru Renewable (Chunked) upload...", flush=True)
+        chunk_size = 32 * 1024 * 1024  # 32MB chunks
+        with open(path, 'rb') as f:
+            offset = 0
+            while offset < size:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                chunk_len = len(chunk)
+                start_byte = offset
+                end_byte = offset + chunk_len - 1
+                content_range = f"bytes {start_byte}-{end_byte}/{size}"
+                offset += chunk_len
 
-    # Step 2: Upload MP4 to upload_url using curl
-    cmd = [
-        'curl', '--silent', '--fail',
-        '--connect-timeout', '30', '--max-time', '7200',
-        '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
-        '-F', f'data=@"{str(path)}";filename="{rand_filename}"',
-        upload_url
-    ]
-    response = run_upload(cmd, runner=run, label='Ok.ru', size=size, capture_output=True, text=True)
-    if response.returncode != 0:
-        raise HostError("Ok.ru file upload failed or connection timed out.")
+                cmd = [
+                    'curl', '--silent', '--fail',
+                    '--connect-timeout', '30', '--max-time', '600',
+                    '-X', 'POST',
+                    '-H', 'Content-Type: video/mp4',
+                    '-H', f'Content-Range: {content_range}',
+                    '--data-binary', '@-',
+                    upload_url
+                ]
+                res = run(cmd, input=chunk, capture_output=True)
+                if res.returncode != 0:
+                    raise HostError(f"Ok.ru renewable chunk upload failed at {content_range}")
+                print(f"Ok.ru uploaded {offset/1024**2:.1f} / {size/1024**2:.1f} MiB ({offset*100//size}%)", flush=True)
 
     # Step 3: Finalize video via video.update to accept agreement and publish
-    if video_id:
+    if video_id and active_session_secret:
         try:
             upd_params = {
                 'application_key': public_key,
@@ -256,17 +304,16 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
                 'vid': video_id
             }
             upd_str = ''.join(f"{k}={upd_params[k]}" for k in sorted(upd_params.keys()))
-            upd_sig = hashlib.md5((upd_str + session_secret_key).encode('utf-8')).hexdigest().lower()
+            upd_sig = hashlib.md5((upd_str + active_session_secret).encode('utf-8')).hexdigest().lower()
             upd_query = dict(upd_params, sig=upd_sig, access_token=access_token)
             upd_url = 'https://api.ok.ru/fb.do?' + urllib.parse.urlencode(upd_query)
             with urllib.request.urlopen(urllib.request.Request(upd_url, headers={'Accept': 'application/json'}), timeout=30) as _:
                 pass
         except Exception:
-            pass  # Non-fatal if video is already ready
+            pass
 
     print(f"Ok.ru upload successful! Video ID: {video_id} (Anonymized title: {rand_num})", flush=True)
     return video_id
-
 
 def verify_okru(file_id, key, size, name, attempts=6, pause=time.sleep):
     if file_id and str(file_id).isdigit():
