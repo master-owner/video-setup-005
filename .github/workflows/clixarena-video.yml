@@ -147,7 +147,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Install media tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent
       - name: Download, validate, encode and upload
         id: video
         env:
@@ -342,7 +342,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Install media and mapping tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-cryptography python3-libtorrent
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: parallel-encoded-*
