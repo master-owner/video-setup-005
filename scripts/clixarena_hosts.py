@@ -186,7 +186,7 @@ def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
 
 
 def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:None, run=subprocess.run):
-    """Upload to Ok.ru with randomized numeric title. Supports files > 2GB via Renewable upload."""
+    """Upload to Ok.ru with randomized numeric title via official multipart stream."""
     if not public_key or not secret_key or not access_token:
         raise HostError('Ok.ru configuration: OK_PUBLIC_KEY, OK_SECRET_KEY or OK_ACCESS_TOKEN is missing or invalid.')
 
@@ -252,74 +252,17 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
     mask(upload_url)
     print(f"Ok.ru upload server validated (video_id: {video_id}); sending MP4...", flush=True)
 
-    # Step 2: Upload MP4 to upload_url
-    two_gb = 2 * 1024 * 1024 * 1024
-    if size < two_gb:
-        cmd = [
-            'curl', '--silent', '--fail',
-            '--connect-timeout', '30', '--max-time', '7200',
-            '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
-            '-F', f'data=@"{str(path)}";filename="{rand_filename}"',
-            upload_url
-        ]
-        response = run_upload(cmd, input='', runner=run, label='Ok.ru', size=size, capture_output=True, text=True)
-        if response.returncode != 0:
-            raise HostError("Ok.ru file upload failed or connection timed out.")
-    else:
-        print(f"File size ({size/1024**3:.2f} GB) exceeds 2GB limit; using Ok.ru Renewable (Chunked) upload...", flush=True)
-        chunk_size = 32 * 1024 * 1024  # 32MB chunks
-        class OkruStatusHandler(urllib.request.HTTPErrorProcessor):
-            def http_response(self, request, response):
-                return response
-            https_response = http_response
-
-        opener = urllib.request.build_opener(OkruStatusHandler)
-        with open(path, 'rb') as f:
-            offset = 0
-            while offset < size:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                chunk_len = len(chunk)
-                start_byte = offset
-                end_byte = offset + chunk_len - 1
-                content_range = f"bytes {start_byte}-{end_byte}/{size}"
-
-                chunk_uploaded = False
-                last_chunk_err = None
-
-                for attempt in range(3):
-                    req = urllib.request.Request(
-                        upload_url,
-                        data=chunk,
-                        headers={
-                            'Content-Type': 'application/octet-stream',
-                            'Content-Range': content_range,
-                            'User-Agent': 'Mozilla/5.0'
-                        },
-                        method='POST'
-                    )
-                    try:
-                        with opener.open(req, timeout=300) as resp:
-                            status = getattr(resp, 'status', getattr(resp, 'code', None))
-                            raw_body = resp.read()
-                            if status in (200, 201):
-                                chunk_uploaded = True
-                                break
-                            else:
-                                err_detail = raw_body.decode('utf-8', errors='ignore')[:200]
-                                last_chunk_err = f"HTTP {status} {err_detail}".strip()
-                    except Exception as e:
-                        last_chunk_err = str(e)
-
-                    time.sleep(2)
-
-                if not chunk_uploaded:
-                    raise HostError(f"Ok.ru renewable chunk upload failed at {content_range}: {last_chunk_err}")
-
-                offset += chunk_len
-                percent = (offset * 100) // size
-                print(f"Ok.ru uploaded {offset/1024**2:.1f} / {size/1024**2:.1f} MiB ({percent}%)", flush=True)
+    # Step 2: Upload MP4 to upload_url via multipart/form-data stream
+    cmd = [
+        'curl', '--silent', '--fail',
+        '--connect-timeout', '60', '--max-time', '7200',
+        '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
+        '-F', f'data=@"{str(path)}";filename="{rand_filename}"',
+        upload_url
+    ]
+    response = run_upload(cmd, input='', runner=run, label='Ok.ru', size=size, capture_output=True, text=True, timeout=7210)
+    if response.returncode != 0:
+        raise HostError("Ok.ru file upload failed or connection timed out.")
 
     # Step 3: Finalize video via video.update to accept agreement and publish
     if video_id and active_session_secret:
