@@ -128,11 +128,13 @@ def prepare(destination, streams, audio_map, duration, options, language='eng', 
     if method=='soft':shutil.copyfile('sinhala.srt',root/'subtitle.srt')
     assets=root/'assets';assets.mkdir(exist_ok=True)
     (assets/'ready.txt').write_text('Worker assets',encoding='utf-8')
+    if Path('standalone-intro.mp4').is_file():
+        shutil.copyfile('standalone-intro.mp4', root/'standalone-intro.mp4')
     if method=='burn':
-        for filename in ('subtitles.ass','intro.ass','title-logo-display.png'):
+        for filename in ('subtitles.ass','intro.ass','title-logo-display.png','standalone-intro.mp4'):
             if Path(filename).is_file():shutil.copyfile(filename,assets/filename)
         if Path('fonts').is_dir():shutil.copytree('fonts',assets/'fonts',dirs_exist_ok=True)
-    render={key:options[key] for key in ('parts','layout','start','duration','subtitle_enabled','watermark_enabled') if key in options}
+    render={key:options[key] for key in ('parts','layout','start','duration','subtitle_enabled','watermark_enabled','skip_burn_intro') if key in options}
     render['content_size']=[cw,ch]
     data=dict(version=1,method=method,count=len(parts),starts=starts,width=width,height=height,content=[cw,ch],
               duration=duration,packets=None,validation='worker-receipts',crf=options['crf'],preset=options['preset'],
@@ -184,6 +186,7 @@ def companion():
         if len(final_audio)!=data['audio_count'] or any(s['codec_name']!='aac' for s in final_audio) or len(final_subs)!=expected_subs:
             raise RuntimeError('AAC companion validation failed; upload was not started.')
     (ROOT/'ready.txt').write_text('Companion job complete.',encoding='utf-8')
+    if (ROOT/'standalone-intro.mp4').is_file(): pass
     print('Audio/subtitle companion ready for final merge',flush=True)
 
 
@@ -201,7 +204,7 @@ def worker(index):
             assets=(ROOT/'assets').resolve();os.chdir(assets)
             offset=data['starts'][index];render=data['render'];logo=data.get('logo_size')
             end=offset+float(metadata['format']['duration'])
-            if logo and offset<render['start']+render['duration'] and end>render['start']:
+            if not render.get('skip_burn_intro') and logo and offset<render['start']+render['duration'] and end>render['start']:
                 args+=['-itsoffset',str(render['start']),'-loop','1','-framerate','30','-t',str(render['duration']),'-i','title-logo-display.png']
             else:logo=None
             graph=filter_graph(width,height,render,logo)
@@ -280,10 +283,15 @@ def merge():
     preview=Path('preview');preview.mkdir(exist_ok=True)
     if method=='soft':shutil.copyfile(ROOT/'subtitle.srt',preview/'subtitle.srt')
     print('Four-runner MP4 validation passed',flush=True)
+    intro_candidate = ROOT/'standalone-intro.mp4' if (ROOT/'standalone-intro.mp4').is_file() else (ROOT/'assets'/'standalone-intro.mp4')
+    if intro_candidate.is_file():
+        from clixarena_features import prepend_standalone_intro
+        added_dur = prepend_standalone_intro(intro_candidate, Path('clixarena.mp4'))
+        print(f'Standalone intro video ({added_dur:.1f}s) prepended before merged MP4', flush=True)
     if os.getenv('SAMPLE_ONLY','false').lower()=='true':
         shutil.copyfile('clixarena.mp4',preview/'sample.mp4')
         return
-    values = {name:os.getenv(name,'') for name in ('STREAMTAPE_LOGIN','STREAMTAPE_KEY','ABYSS_API_KEY','STREAMHG_API_KEY','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_API_ID','TELEGRAM_API_HASH')}
+    values = {name:os.getenv(name,'') for name in ('STREAMTAPE_LOGIN','STREAMTAPE_KEY','ABYSS_API_KEY','STREAMHG_API_KEY','OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_API_ID','TELEGRAM_API_HASH')}
     for value in values.values(): mask(value)
     complete_upload(Path('clixarena.mp4'),output_filename(os.getenv('OUTPUT_NAME','CLIXARENA.mp4')),values)
 

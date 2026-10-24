@@ -153,11 +153,12 @@ jobs:
             curl -sL --connect-timeout 15 --max-time 120 https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || (sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg)
             sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
           fi
-      - name: Setup python tools
+      - name: Setup python tools and Sinhala TTS voice engine
         run: |
-          if ! python3 -c "import libtorrent" 2>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent
+          if ! python3 -c "import libtorrent" 2>/dev/null || ! command -v espeak-ng >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent espeak-ng python3-pip
           fi
+          pip3 install --quiet --break-system-packages edge-tts 2>/dev/null || pip3 install --quiet edge-tts 2>/dev/null || true
       - name: Download, validate, encode and upload
         id: video
         env:
@@ -226,6 +227,7 @@ jobs:
             parallel-media/companion-source.mkv
             parallel-media/audio-source.mka
             parallel-media/subtitle.srt
+            parallel-media/standalone-intro.mp4
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -364,6 +366,7 @@ jobs:
             parallel-media/companion.mkv
             parallel-media/audio.m4a
             parallel-media/subtitle.srt
+            parallel-media/standalone-intro.mp4
           compression-level: 0
           retention-days: 1
           if-no-files-found: error

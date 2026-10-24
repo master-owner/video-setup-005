@@ -185,6 +185,86 @@ def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
     return False,False
 
 
+def prepare_okru_evasion(path, run=subprocess.run):
+    """Ensure clean metadata, unique container salt, and fallback 5s intro if no standalone title animation intro was already prepended."""
+    import os
+    from pathlib import Path
+    src = Path(path)
+    if not src.is_file():
+        return path, None
+    evade_mode = os.getenv('OKRU_COPYRIGHT_EVASION', 'intro').strip().lower()
+    if evade_mode in ('0', 'false', 'off', 'none'):
+        return path, None
+    salt = f"clixarena-{random.randint(100000000, 999999999)}-{int(time.time())}"
+    evaded = src.parent / f"okru_evaded_{random.randint(10000, 99999)}.mp4"
+    intro_file = src.parent / f"okru_intro_{random.randint(10000, 99999)}.mp4"
+    concat_list = src.parent / f"okru_concat_{random.randint(10000, 99999)}.txt"
+    intro_seconds = int(os.getenv('OKRU_INTRO_SECONDS', '5') or '5')
+    already_has_intro = Path('standalone-intro.mp4').is_file() or Path('parallel-media/standalone-intro.mp4').is_file()
+
+    try:
+        if evade_mode in ('intro', 'hash') and not already_has_intro:
+            probe_cmd = ['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(src)]
+            probe_res = run(probe_cmd, capture_output=True, text=True, timeout=60)
+            v_stream, a_stream = {}, {}
+            if getattr(probe_res, 'returncode', 1) == 0 and getattr(probe_res, 'stdout', ''):
+                info = json.loads(probe_res.stdout)
+                streams = info.get('streams', [])
+                v_stream = next((s for s in streams if s.get('codec_type') == 'video'), {})
+                a_stream = next((s for s in streams if s.get('codec_type') == 'audio'), {})
+            w = int(v_stream.get('width') or 1280)
+            h = int(v_stream.get('height') or 720)
+            fps_raw = v_stream.get('r_frame_rate') or '24/1'
+            pix_fmt = v_stream.get('pix_fmt') or 'yuv420p'
+            sample_rate = int(a_stream.get('sample_rate') or 48000)
+            channels = int(a_stream.get('channels') or 2)
+            ch_layout = 'stereo' if channels == 2 else 'mono' if channels == 1 else '5.1'
+            gen_cmd = [
+                'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                '-f', 'lavfi', '-i', f'color=c=black:s={w}x{h}:r={fps_raw}:d={intro_seconds}',
+                '-f', 'lavfi', '-i', f'anullsrc=channel_layout={ch_layout}:sample_rate={sample_rate}',
+                '-t', str(intro_seconds),
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', pix_fmt,
+                *(['-c:a', 'aac', '-b:a', '128k'] if a_stream else ['-an']),
+                '-video_track_timescale', str(v_stream.get('time_base', '1/90000')).split('/')[-1],
+                str(intro_file)
+            ]
+            gen_res = run(gen_cmd, capture_output=True, text=True, timeout=180)
+            if getattr(gen_res, 'returncode', 1) == 0 and intro_file.is_file() and intro_file.stat().st_size > 0:
+                concat_list.write_text(f"file '{intro_file.resolve()}'\nfile '{src.resolve()}'\n", encoding='utf-8')
+                concat_cmd = [
+                    'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                    '-f', 'concat', '-safe', '0', '-i', str(concat_list),
+                    '-map_metadata', '-1', '-map_chapters', '-1',
+                    '-metadata', f'title={random.randint(1000000000, 9999999999)}',
+                    '-metadata', f'comment={salt}',
+                    '-c', 'copy', '-movflags', '+faststart', str(evaded)
+                ]
+                concat_res = run(concat_cmd, capture_output=True, text=True, timeout=600)
+                if getattr(concat_res, 'returncode', 1) == 0 and evaded.is_file() and evaded.stat().st_size > src.stat().st_size:
+                    return evaded, evaded
+
+        cmd = [
+            'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+            '-i', str(src),
+            '-map', '0:v:0', '-map', '0:a?', '-map', '0:s?',
+            '-map_metadata', '-1', '-map_chapters', '-1',
+            '-metadata', f'title={random.randint(1000000000, 9999999999)}',
+            '-metadata', f'comment={salt}',
+            '-c', 'copy', '-movflags', '+faststart', str(evaded)
+        ]
+        res = run(cmd, capture_output=True, text=True, timeout=600)
+        if getattr(res, 'returncode', 1) == 0 and evaded.is_file() and evaded.stat().st_size > 0:
+            return evaded, evaded
+    except Exception:
+        pass
+    finally:
+        intro_file.unlink(missing_ok=True)
+        concat_list.unlink(missing_ok=True)
+    evaded.unlink(missing_ok=True)
+    return path, None
+
+
 def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:None, run=subprocess.run):
     """Upload to Ok.ru with randomized numeric title via official multipart stream."""
     if not public_key or not secret_key or not access_token:
@@ -194,9 +274,10 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
     mask(secret_key)
     mask(access_token)
 
+    upload_path, temp_evaded = prepare_okru_evasion(path, run=run)
     rand_num = str(random.randint(1000000000, 9999999999))
     rand_filename = f"{rand_num}.mp4"
-    size = file_size(path) or 0
+    size = file_size(upload_path) or 0
 
     print(f"Requesting Ok.ru video upload URL (anonymized title: {rand_num})...", flush=True)
 
@@ -257,10 +338,17 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
         'curl', '--silent', '--fail',
         '--connect-timeout', '60', '--max-time', '7200',
         '--write-out', '\nCLIXARENA_HTTP:%{http_code}',
-        '-F', f'data=@"{str(path)}";filename="{rand_filename}"',
+        '-F', f'data=@"{str(upload_path)}";filename="{rand_filename}"',
         upload_url
     ]
-    response = run_upload(cmd, input='', runner=run, label='Ok.ru', size=size, capture_output=True, text=True, timeout=7210)
+    try:
+        response = run_upload(cmd, input='', runner=run, label='Ok.ru', size=size, capture_output=True, text=True, timeout=7210)
+    finally:
+        if temp_evaded is not None:
+            try:
+                temp_evaded.unlink(missing_ok=True)
+            except Exception:
+                pass
     if response.returncode != 0:
         raise HostError("Ok.ru file upload failed or connection timed out.")
 

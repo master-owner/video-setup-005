@@ -177,6 +177,9 @@ jobs:
           OVERLAY_DURATION: ${{ inputs.overlay_duration }}
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
+          OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
+          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
@@ -218,6 +221,7 @@ jobs:
             parallel-media/companion-source.mkv
             parallel-media/audio-source.mka
             parallel-media/subtitle.srt
+            parallel-media/standalone-intro.mp4
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -329,6 +333,7 @@ jobs:
             parallel-media/companion.mkv
             parallel-media/audio.m4a
             parallel-media/subtitle.srt
+            parallel-media/standalone-intro.mp4
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -368,6 +373,9 @@ jobs:
           SUBTITLE_PATH: ${{ inputs.subtitle_path }}
           PORTAL_JOB_ID: ${{ inputs.job_id }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
+          OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
+          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}

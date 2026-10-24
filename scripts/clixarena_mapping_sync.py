@@ -67,6 +67,7 @@ def prune(rows,missing):
             if host in removed:
                 item.pop(HOSTS[host],None);providers.pop(host,None)
             elif host not in providers:providers[host]={'file_id':fid}
+        if item.get('okru_id') and 'okru' not in providers:providers['okru']={'file_id':item['okru_id']}
         if not providers:continue
         item['providers']=providers
         if item.get('provider') in removed:item['provider']=next(iter(providers))

@@ -61,4 +61,8 @@ class HostTests(unittest.TestCase):
   with patch.dict(os.environ,{'OVERLAY_LAYOUT':'{"uploadHost":"streamhg"}','GITHUB_OUTPUT':''}),patch.object(pipeline,'upload_streamhg',upload),patch.object(pipeline,'verify_streamhg',lambda *args:(True,True)),patch.object(pipeline,'save_mapping',side_effect=ValueError('private error')),contextlib.redirect_stdout(io.StringIO()):
    with self.assertRaises(pipeline.DownloadError):pipeline.complete_upload(path,'Title.mp4',{'STREAMHG_API_KEY':'secret'})
   self.assertEqual(len(calls),1)
+ def test_okru_evasion_and_upload_preserves_mapping(self):
+  rows=merge_provider_mapping([],self.identity,'123456789','okru')
+  self.assertEqual(rows[0]['okru_id'],'123456789');self.assertEqual(rows[0]['providers']['okru']['file_id'],'123456789')
+  self.assertEqual(selected_host({'uploadHost':'okru'}),'okru')
 if __name__=='__main__':unittest.main()

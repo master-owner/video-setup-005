@@ -25,7 +25,8 @@ import time
 import urllib.parse
 import urllib.request
 from clixarena_features import (settings, subtitle_asset, audio_selection, fetch_logo,
-                                write_intro, video_dimensions, fitted_dimensions, filter_graph, encode_progress, logo_dimensions)
+                                write_intro, video_dimensions, fitted_dimensions, filter_graph, encode_progress, logo_dimensions,
+                                render_standalone_intro, prepend_standalone_intro)
 from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
 from clixarena_hosts import HostError,selected_host,selected_hosts,merge_provider_mapping,upload_streamhg,verify_streamhg,upload_abyss,verify_abyss,upload_okru,verify_okru
@@ -1169,7 +1170,7 @@ def main():
                 if any(options['parts'].values()) and options['start'] >= expected_duration:
                     print('::warning::Title timestamp is outside this encode. It will not appear; choose a timestamp within the sample/full video duration.')
                 logo_input_duration = 0
-                if logo_size and options['start'] < expected_duration:
+                if logo_size and (options.get('intro_prepend', True) or options['start'] < expected_duration):
                     stage = 'logo display preparation'
                     display_width, display_height = logo_dimensions(width, height, logo_size, options['layout']['logoScale'])
                     command(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
@@ -1177,10 +1178,21 @@ def main():
                              f'scale={display_width}:{display_height}:flags=lanczos,format=rgba',
                              '-frames:v', '1', 'title-logo-display.png'], timeout=120)
                     logo_size = (display_width, display_height)
-                    logo_input_duration = min(options['duration'], expected_duration - options['start'])
-                    print(f'Logo prepared once at {display_width} x {display_height}; animation input ends after its display window', flush=True)
+                    logo_input_duration = min(options['duration'], expected_duration - options['start']) if not options.get('intro_prepend', True) else options['duration']
+                    print(f'Logo prepared once at {display_width} x {display_height}', flush=True)
                 else:
                     logo_size = None
+                standalone_intro_path = None
+                if any(options['parts'].values()) and options.get('intro_prepend', True):
+                    stage = 'standalone intro video and Sinhala male voiceover rendering'
+                    audios_list = [s for s in source['streams'] if s.get('codec_type') == 'audio']
+                    sel_audio = audios_list[int(audio_map.split(':')[-1].rstrip('?'))] if audios_list else None
+                    standalone_intro_path = render_standalone_intro(
+                        width, height, options, overlay_name,
+                        logo_size=logo_size, video_stream=video_stream, audio_stream=sel_audio,
+                        output_path='standalone-intro.mp4'
+                    )
+                    options['skip_burn_intro'] = True
                 if os.getenv('DISTRIBUTED_PREPARE')=='true':
                     from clixarena_distributed import prepare
                     prepare(original,source['streams'],audio_map,expected_duration,options,language,method,logo_size=logo_size)
@@ -1196,9 +1208,10 @@ def main():
                 else:
                     stage = 'encoding'
                     print('Encoding H.264/AAC'+(' with watermark' if options['watermark_enabled'] else '; watermark disabled') + (' and ' + language_name + ' subtitles' if burn_subtitles else '; subtitles disabled'), flush=True)
-                    filters = filter_graph(width, height, options, logo_size)
+                    burn_logo = None if options.get('skip_burn_intro') else logo_size
+                    filters = filter_graph(width, height, options, burn_logo)
                     inputs = ['-threads', '0', '-i', 'source.video']
-                    if logo_size:
+                    if burn_logo:
                         inputs += ['-itsoffset', str(options['start']), '-loop', '1', '-framerate', '30',
                                    '-t', str(logo_input_duration), '-i', 'title-logo-display.png']
                     encode_progress(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + inputs +
@@ -1227,6 +1240,10 @@ def main():
                     preview = original / 'preview'
                     preview.mkdir(exist_ok=True)
                     shutil.copyfile('sinhala.srt', preview / 'subtitle.srt')
+                if standalone_intro_path and standalone_intro_path.is_file():
+                    stage = 'prepending standalone title animation intro video'
+                    added_dur = prepend_standalone_intro(standalone_intro_path, Path('clixarena.mp4'))
+                    print(f'Standalone intro video ({added_dur:.1f}s) prepended before main video (subtitles stay in sync)', flush=True)
                 if sample_only:
                     stage = 'sample export'
                     preview = original / 'preview'
