@@ -321,8 +321,10 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
         custom_vo = Path('intro-voice.mp3')
     raw_tts = Path('intro-tts-raw.mp3')
     clean_text = ' '.join(line.strip() for line in (message_text or '').splitlines() if line.strip())
+    if not clean_text or any('\u0d80' <= c <= '\u0dff' for c in clean_text):
+        clean_text = 'Visit now to watch movies and TV series online with Sinhala subtitles.'
     if not clean_text:
-        clean_text = 'සිංහල උපසිරැසි සමග චිත්‍රපට සහ රූපවාහිනී කතාමාලා ඔන්ලයින් නැරඹීමට පිවිසෙන්න'
+        clean_text = 'Visit now to watch movies and TV series online with Sinhala subtitles.'
 
     has_speech = False
     if custom_vo.is_file() and custom_vo.stat().st_size > 0:
@@ -332,7 +334,7 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
         try:
             res = subprocess.run([
                 'edge-tts',
-                '--voice', 'si-LK-SameeraNeural',
+                '--voice', 'en-US-ChristopherNeural',
                 '--rate=-8%',
                 '--pitch=-18Hz',
                 '--text', clean_text,
