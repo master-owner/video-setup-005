@@ -49,3 +49,58 @@ class IntroJoinTests(unittest.TestCase):
                 pixel=subprocess.check_output(['ffmpeg','-v','error','-ss',str(t),'-i',str(main),'-frames:v','1','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','-'])
                 self.assertGreater(pixel[channel], 180)
             self.ff('-xerror','-i',main,'-f','null','-')
+
+    def test_nominal_rate_wins_over_chunk_average(self):
+        from clixarena_features import intro_frame_rate
+        self.assertEqual(intro_frame_rate({'r_frame_rate':'24000/1001','avg_frame_rate':'191808/8009'}),'24000/1001')
+        self.assertEqual(intro_frame_rate({'r_frame_rate':'0/0','avg_frame_rate':'25/1'}),'25')
+        with self.assertRaises(ValueError):
+            intro_frame_rate({'r_frame_rate':'0/0','avg_frame_rate':'0/0'})
+
+    def test_failed_encoder_reports_stage_and_redacts_urls(self):
+        from unittest.mock import patch
+        from clixarena_features import IntroJoinError
+        real_run=subprocess.run
+        with tempfile.TemporaryDirectory() as d:
+            d=Path(d); main=d/'main.mp4'; intro=d/'intro.mp4'
+            self.ff('-f','lavfi','-i','color=blue:s=160x90:r=24','-t','1','-c:v','libx264',main)
+            intro.write_bytes(main.read_bytes())
+            original=main.read_bytes()
+            def fake(args, **kwargs):
+                if args[0]=='ffmpeg':
+                    return subprocess.CompletedProcess(args,1,'','No space left on device https://example.com/secret')
+                return real_run(args,**kwargs)
+            with patch('clixarena_features.subprocess.run',side_effect=fake):
+                with self.assertRaisesRegex(IntroJoinError,'Normalizing standalone intro failed') as err:
+                    prepend_standalone_intro(intro,main)
+            self.assertIn('No space left on device',str(err.exception))
+            self.assertNotIn('example.com',str(err.exception))
+            self.assertEqual(main.read_bytes(),original)
+
+    def test_four_runner_merge_with_intro(self):
+        import concurrent.futures
+        import os
+        from unittest.mock import patch
+        import clixarena_distributed as distributed
+        previous=Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            try:
+                os.chdir(root)
+                self.ff('-f','lavfi','-i','color=blue:s=320x180:r=24','-f','lavfi','-i','sine=frequency=440','-t','8','-c:v','libx264','-g','24','-sc_threshold','0','-c:a','aac','source.video.mp4')
+                self.ff('-f','lavfi','-i','color=red:s=160x90:r=30','-t','1','-c:v','libx264','standalone-intro.mp4')
+                Path('sinhala.srt').write_text('1\n00:00:01,000 --> 00:00:06,000\nHello\n')
+                source=distributed.info('source.video.mp4')
+                with patch.dict(os.environ,{'GITHUB_OUTPUT':str(root/'outputs'),'SAMPLE_ONLY':'true'}):
+                    distributed.prepare(root,source['streams'],'0:a:0',8,{'preset':'veryfast','crf':18},'eng',method='soft',source='source.video.mp4')
+                    self.assertEqual(distributed.manifest()['count'],4)
+                    with concurrent.futures.ThreadPoolExecutor(4) as pool:
+                        list(pool.map(distributed.worker,range(4)))
+                    distributed.companion()
+                    distributed.merge()
+                self.assertFalse((distributed.ROOT/'joined.mp4').exists())
+                result=self.probe('preview/sample.mp4')
+                self.assertAlmostEqual(float(result['format']['duration']),9,delta=.2)
+                self.ff('-xerror','-i','preview/sample.mp4','-f','null','-')
+            finally:
+                os.chdir(previous)

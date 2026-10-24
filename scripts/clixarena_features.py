@@ -465,6 +465,23 @@ def render_standalone_intro(width, height, options, overlay_name, logo_size=None
     return Path(output_path)
 
 
+class IntroJoinError(ValueError):
+    """Safe local-media diagnostic that may be shown in workflow logs."""
+
+
+def intro_frame_rate(video):
+    """Use nominal cadence, not a duration-derived average from concatenated chunks."""
+    from fractions import Fraction
+    for field in ('r_frame_rate', 'avg_frame_rate'):
+        try:
+            rate = Fraction(video.get(field, '0/0'))
+            if 1 <= rate <= 240:
+                return str(rate.limit_denominator(1001))
+        except (ValueError, ZeroDivisionError, TypeError):
+            pass
+    raise IntroJoinError('No usable frame rate in encoded main video; upload was not started')
+
+
 def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
     """Normalize only the short intro to the encoded main, then validate the join."""
     import tempfile
@@ -472,16 +489,25 @@ def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
     intro_p, main_p = Path(intro_path).resolve(), Path(main_video_path).resolve()
     target = Path(output_path).resolve() if output_path else main_p
 
-    def run(args):
-        result = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + args,
-                                capture_output=True, text=True, timeout=900)
+    def detail(raw):
+        # These commands only read local media. Still remove URLs from diagnostics.
+        return re.sub(r'https?://[^\s]+', '[URL hidden]', raw or '').replace('::', ': :').replace('\n', ' | ')[-2000:]
+
+    def run(args, stage):
+        print(stage + ' started', flush=True)
+        try:
+            result = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + args,
+                                    capture_output=True, text=True, timeout=900)
+        except subprocess.TimeoutExpired:
+            raise IntroJoinError(stage + ' timed out after 900s; upload was not started') from None
         if result.returncode:
-            raise ValueError('Intro join/validation failed; upload was not started')
+            raise IntroJoinError(stage + ' failed (exit ' + str(result.returncode) + '): ' + detail(result.stderr))
+        print(stage + ' complete', flush=True)
     def probe(path):
         result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
                                  '-of', 'json', str(path)], capture_output=True, text=True, timeout=60)
         if result.returncode:
-            raise ValueError('Cannot inspect intro/main video; upload was not started')
+            raise IntroJoinError('Cannot inspect intro/main video: ' + detail(result.stderr))
         return json.loads(result.stdout)
 
     main = probe(main_p)
@@ -490,14 +516,20 @@ def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
     subs = [s for s in main['streams'] if s['codec_type'] == 'subtitle']
     if video['codec_name'] != 'h264' or len(audio) > 1 or any(s['codec_name'] != 'aac' for s in audio):
         raise ValueError('Intro join requires H.264 and at most one AAC audio track')
-    fps = video.get('avg_frame_rate') or video['r_frame_rate']
+    fps = intro_frame_rate(video)
     frame_seconds = float(1 / Fraction(fps))
+    print(f"Intro target: {video['width']}x{video['height']}, {fps} fps, {video['pix_fmt']}, audio tracks={len(audio)}", flush=True)
     duration = float(probe(intro_p)['format']['duration'])
     # Round to an exact frame boundary for the video concat timeline.
     duration = round(duration / frame_seconds) * frame_seconds
     with tempfile.TemporaryDirectory(prefix='intro-join-', dir=main_p.parent) as tmp:
         tmp = Path(tmp)
         normalized, joined = tmp/'intro.mp4', tmp/'joined.mp4'
+        import shutil
+        free = shutil.disk_usage(main_p.parent).free
+        needed = main_p.stat().st_size + intro_p.stat().st_size * 2 + 64 * 1024 * 1024
+        if free < needed:
+            raise IntroJoinError(f'Intro join needs about {needed // (1024*1024)} MiB free, only {free // (1024*1024)} MiB available; upload was not started')
         args = ['-i', str(intro_p)]
         intro_audio = any(s['codec_type'] == 'audio' for s in probe(intro_p)['streams'])
         if audio and not intro_audio:
@@ -514,7 +546,7 @@ def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
         else:
             args += ['-an']
         args += ['-t', str(duration), str(normalized)]
-        run(args)
+        run(args, 'Normalizing standalone intro')
         # Use the actual normalized container duration for both concat and subtitle offset.
         duration = float(probe(normalized)['format']['duration'])
         def quote(path):
@@ -529,16 +561,16 @@ def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
             args += ['-map', '1:s?']
         args += ['-map_metadata', '0', '-map_chapters', '-1', '-c', 'copy',
                  '-movflags', '+faststart', str(joined)]
-        run(args)
+        run(args, 'Joining intro and main MP4')
         result = probe(joined)
         expected = float(main['format']['duration']) + duration
         if abs(float(result['format']['duration']) - expected) > max(.25, 3*frame_seconds):
-            raise ValueError('Joined duration mismatch; upload was not started')
+            raise IntroJoinError(f'Joined duration mismatch: expected {expected:.3f}s, got {float(result["format"]["duration"]):.3f}s; upload was not started')
         for kind, count in [('video', 1), ('audio', len(audio)), ('subtitle', len(subs))]:
             if sum(s['codec_type'] == kind for s in result['streams']) != count:
-                raise ValueError('Joined track count mismatch; upload was not started')
+                raise IntroJoinError('Joined ' + kind + ' track count mismatch; upload was not started')
         # Decode across the cut to catch damaged transitions without decoding the whole movie.
         run(['-ss', str(max(0, duration-1)), '-i', str(joined), '-t', '3',
-             '-map', '0:v:0', '-map', '0:a?', '-xerror', '-f', 'null', '-'])
+             '-map', '0:v:0', '-map', '0:a?', '-xerror', '-f', 'null', '-'], 'Checking intro transition')
         joined.replace(target)
     return duration

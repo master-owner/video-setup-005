@@ -285,6 +285,10 @@ def merge():
     print('Four-runner MP4 validation passed',flush=True)
     intro_candidate = ROOT/'standalone-intro.mp4' if (ROOT/'standalone-intro.mp4').is_file() else (ROOT/'assets'/'standalone-intro.mp4')
     if intro_candidate.is_file():
+        # The validated final MP4 already contains this intermediate video.
+        # Reclaim its full movie-sized allocation before writing the intro join.
+        (ROOT/'joined.mp4').unlink(missing_ok=True)
+        print('Prepending standalone intro to validated MP4', flush=True)
         from clixarena_features import prepend_standalone_intro
         added_dur = prepend_standalone_intro(intro_candidate, Path('clixarena.mp4'))
         print(f'Standalone intro video ({added_dur:.1f}s) prepended before merged MP4', flush=True)
@@ -305,6 +309,7 @@ if __name__ == '__main__':
         else:merge()
     except Exception as error:
         from clixarena_video import DownloadError
-        if isinstance(error, DownloadError): print('::error::'+str(error), flush=True)
+        from clixarena_features import IntroJoinError
+        if isinstance(error, (DownloadError, IntroJoinError)): print('::error::'+str(error), flush=True)
         print('::error::Parallel encoding, validation or upload failed. Check the stage above; no automatic upload retry.',flush=True)
         raise SystemExit(1)
