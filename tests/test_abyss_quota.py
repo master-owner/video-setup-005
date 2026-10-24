@@ -2,7 +2,11 @@ import copy,os,unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit,parse_qs
 import clixarena_mapping_sync as sync
-from test_mapping_sync_all import QUOTA
+QUOTA = {
+    'storageQuota': {'limit': 1000, 'actual': 100, 'usage': 10},
+    'uploadQuota': {'dailyUploadQuota': 500, 'dailyUploadUsed': 50, 'dailyUploadRemaining': 450},
+    'maxUploadSize': 2000
+}
 
 class AbyssQuotaTests(unittest.TestCase):
     def test_documented_quota_and_matching_file_succeed_with_query_api_key(self):

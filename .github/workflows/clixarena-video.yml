@@ -153,12 +153,11 @@ jobs:
             curl -sL --connect-timeout 15 --max-time 120 https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || (sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg)
             sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
           fi
-      - name: Setup python tools and Sinhala TTS voice engine
+      - name: Setup python tools
         run: |
-          if ! python3 -c "import libtorrent" 2>/dev/null || ! command -v espeak-ng >/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent espeak-ng python3-pip
+          if ! python3 -c "import libtorrent" 2>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent
           fi
-          pip3 install --quiet --break-system-packages edge-tts 2>/dev/null || pip3 install --quiet edge-tts 2>/dev/null || true
       - name: Download, validate, encode and upload
         id: video
         env:
@@ -188,12 +187,6 @@ jobs:
           OVERLAY_DURATION: ${{ inputs.overlay_duration }}
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
-          OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
-          OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
-          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
-          STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
-          STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
         run: python3 -u scripts/clixarena_video.py
       - name: Stage source chunks concurrently
         if: ${{ steps.video.outputs.distributed == 'true' }}
@@ -226,7 +219,6 @@ jobs:
             parallel-media/ready.txt
             parallel-media/companion-source.mkv
             parallel-media/audio-source.mka
-            parallel-media/intro-voice-processed.m4a
             parallel-media/subtitle.srt
           compression-level: 0
           retention-days: 1
@@ -415,12 +407,6 @@ jobs:
           SUBTITLE_PATH: ${{ inputs.subtitle_path }}
           PORTAL_JOB_ID: ${{ inputs.job_id }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
-          OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
-          OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
-          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
-          STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
-          STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
         run: python3 -u scripts/clixarena_distributed.py merge
       - name: Mapping receipt
         if: ${{ always() && !inputs.sample_only }}

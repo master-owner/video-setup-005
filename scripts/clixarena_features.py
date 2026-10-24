@@ -76,14 +76,14 @@ def settings():
         if not isinstance(color, str) or not re.fullmatch(r'#[0-9A-Fa-f]{6}', color):
             raise ValueError('Invalid overlay text color')
         styles[key] = {'size': number(style.get('size', default), 8, 160, 'overlay font size'), 'color': color.upper()}
-    providers = [layout.get(k, '') for k in ('uploadHost', 'secondUploadHost', 'thirdUploadHost', 'fourthUploadHost')]
-    default_stealth = ('okru' in providers) or (not any(providers))
-    okru_stealth = layout.get('okruStealth', default_stealth)
-    if type(okru_stealth) is not bool:
-        okru_stealth = True
+    has_layout = bool(os.getenv('OVERLAY_LAYOUT', '').strip())
+    okru_stealth = False
+    intro_delay = layout.get('introDelay', has_layout)
+    if type(intro_delay) is not bool:
+        intro_delay = has_layout
     return {'layout': {'positions': positions, 'message': message, 'styles': styles, 'logoScale': logo_scale}, 'parts': parts, 'preset': preset, 'height': height, 'crf': crf, 'start': start, 'duration': duration,
             'watermark_enabled':watermark_enabled, 'subtitle_enabled': subtitle_enabled, 'subtitle_language': subtitle_language, 'audio': os.getenv('AUDIO_TRACK', 'auto').strip(),
-            'tmdb': os.getenv('TMDB_URL', '').strip(), 'okru_stealth': okru_stealth}
+            'tmdb': os.getenv('TMDB_URL', '').strip(), 'okru_stealth': okru_stealth, 'intro_delay': intro_delay}
 
 
 def subtitle_asset(root, value):
@@ -250,10 +250,17 @@ def logo_dimensions(width, height, logo_size, scale=100):
 
 def filter_graph(width, height, options, logo_size=None):
     content_width,content_height=options.get('content_size',(width,height))
-    stealth_vf = 'crop=iw*0.97:ih*0.97,eq=contrast=1.03:brightness=0.01:saturation=1.04,' if options.get('okru_stealth') else ''
+    stealth_vf = (
+        'crop=iw*0.92:ih*0.92:iw*0.05:ih*0.03,'
+        'eq=contrast=1.06:brightness=0.015:saturation=1.08:gamma=1.03,'
+        'hue=h=3,vignette=PI/6,noise=alls=3:allf=t,'
+    ) if False else ''
+    lead_in = float(options.get('intro_lead_in', 0) or 0)
+    tpad_vf = f'tpad=start_duration={lead_in}:start_mode=add:color=black,' if lead_in > 0 and not options.get('chunk_mode') else ''
     base = f'[0:v:0]{stealth_vf}scale={content_width}:{content_height}:flags=bicubic,setsar=1,'
     if (content_width,content_height)!=(width,height):
         base += f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,'
+    base += tpad_vf
     if options.get('subtitle_enabled', True):
         base += 'ass=subtitles.ass:fontsdir=fonts:shaping=complex,'
     if options.get('watermark_enabled',True):
@@ -263,7 +270,8 @@ def filter_graph(width, height, options, logo_size=None):
     text = any(options.get('parts', {'name': bool(logo_size), 'message': bool(logo_size)})[key] for key in ('name', 'message'))
     if not logo_size:
         return base + (',ass=intro.ass:fontsdir=fonts:shaping=complex' if text else '') + '[video]'
-    start, duration = options['start'], options['duration']
+    start = 0.0 if lead_in > 0 else options['start']
+    duration = options['duration']
     fade_in = min(1, duration / 4)
     fade_out = start + duration - 1
     lp = options.get('layout', {}).get('positions', {}).get('logo', {'x':50,'y':410/1080*100})
@@ -312,93 +320,37 @@ def encode_progress(args, duration, timeout=16000, output="clixarena.mp4"):
             process.stdout.close()
 
 
-def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channels=2):
-    """Generate a deep marketing-style Sinhala male voiceover MP4/M4A for the title animation."""
-    import shutil, subprocess
+def shift_srt_timestamps(srt_path, offset_seconds, speed_factor=1.0):
+    """Scale SRT subtitle timestamps by 1/speed_factor and shift forward by offset_seconds so subtitles stay 100% synced!"""
     from pathlib import Path
-    custom_vo = Path('fonts/intro-voice.mp3')
-    if not custom_vo.is_file():
-        custom_vo = Path('intro-voice.mp3')
-    raw_tts = Path('intro-tts-raw.mp3')
-    clean_text = ' '.join(line.strip() for line in (message_text or '').splitlines() if line.strip())
-    if not clean_text or any('\u0d80' <= c <= '\u0dff' for c in clean_text):
-        clean_text = 'Visit now to watch movies and TV series online with Sinhala subtitles.'
-    if not clean_text:
-        clean_text = 'Visit now to watch movies and TV series online with Sinhala subtitles.'
-
-    has_speech = False
-    if custom_vo.is_file() and custom_vo.stat().st_size > 0:
-        shutil.copyfile(custom_vo, raw_tts)
-        has_speech = True
-    elif shutil.which('edge-tts'):
-        try:
-            res = subprocess.run([
-                'edge-tts',
-                '--voice', 'en-US-ChristopherNeural',
-                '--rate=-8%',
-                '--pitch=-18Hz',
-                '--text', clean_text,
-                '--write-media', str(raw_tts)
-            ], capture_output=True, text=True, timeout=45)
-            if res.returncode == 0 and raw_tts.is_file() and raw_tts.stat().st_size > 0:
-                has_speech = True
-        except Exception:
-            pass
-    if not has_speech and shutil.which('espeak-ng'):
-        try:
-            wav_tts = Path('intro-tts-raw.wav')
-            res = subprocess.run([
-                'espeak-ng', '-v', 'si', '-p', '18', '-s', '135', '-w', str(wav_tts), clean_text
-            ], capture_output=True, text=True, timeout=30)
-            if res.returncode == 0 and wav_tts.is_file() and wav_tts.stat().st_size > 0:
-                raw_tts = wav_tts
-                has_speech = True
-        except Exception:
-            pass
-
-    out_audio = Path('intro-voice-processed.m4a')
-    if not has_speech:
-        return None
-
-    print('Synthesizing deep marketing male voiceover for Sinhala title animation...', flush=True)
-    af_chain = (
-        f"[0:a]asetrate=24000*0.88,aresample={sample_rate},"
-        f"atempo=1.08,"
-        f"equalizer=f=110:width_type=o:width=1.2:g=7,"
-        f"equalizer=f=240:width_type=o:width=1.0:g=4,"
-        f"equalizer=f=3200:width_type=o:width=1.5:g=3,"
-        f"acompressor=threshold=-16dB:ratio=4:attack=5:release=80:makeup=5,"
-        f"aecho=0.8:0.88:45:0.18,"
-        f"afade=t=out:st={max(0.5, duration-0.6)}:d=0.6[aout]"
-    )
-    cmd = [
-        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-        '-i', str(raw_tts),
-        '-filter_complex', af_chain,
-        '-map', '[aout]',
-        '-ac', str(channels), '-ar', str(sample_rate),
-        '-c:a', 'aac', '-b:a', '192k', '-t', str(duration),
-        str(out_audio)
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if res.returncode == 0 and out_audio.is_file() and out_audio.stat().st_size > 0:
-        return out_audio
-    return None
+    if (not offset_seconds or offset_seconds <= 0) and abs(speed_factor - 1.0) < 1e-6:
+        return
+    p = Path(srt_path)
+    if not p.is_file():
+        return
+    text = p.read_text(encoding='utf-8-sig')
+    def fmt_ts(sec):
+        ms = max(0, int(round(sec * 1000)))
+        h = ms // 3600000
+        m = (ms // 60000) % 60
+        s = (ms // 1000) % 60
+        rem = ms % 1000
+        return f"{h:02d}:{m:02d}:{s:02d},{rem:03d}"
+    def parse_ts(h, m, s, ms):
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+    pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})')
+    def repl(m):
+        s1 = (parse_ts(m[1], m[2], m[3], m[4]) / speed_factor) + offset_seconds
+        s2 = (parse_ts(m[5], m[6], m[7], m[8]) / speed_factor) + offset_seconds
+        return f"{fmt_ts(s1)} --> {fmt_ts(s2)}"
+    shifted = pattern.sub(repl, text)
+    p.write_text(shifted, encoding='utf-8')
 
 
-def okru_stealth_audio_args(streams, audio_map, options=None):
-    """Return audio encoding args with anti-Content-ID pitch shift (97% pitch + tempo compensation = exact 1.0x duration) so audio/subtitles never desync!"""
-    options = options or {}
-    audio = [s for s in streams if s.get('codec_type') == 'audio']
-    if not audio:
-        return []
-    selected = audio[int(audio_map.split(':')[-1].rstrip('?'))]
-    sr = int(selected.get('sample_rate') or 48000)
-    if options.get('okru_stealth'):
-        print('Applying Ok.ru anti-Content-ID audio pitch shift (97% pitch, 1.000x exact duration lock)...', flush=True)
-        af = f"asetrate={sr}*0.97,aresample={sr},atempo=1/0.97,highpass=f=35,lowpass=f=15500"
-        return ['-af', af, '-c:a', 'aac', '-b:a', '192k']
-    if selected.get('codec_name') == 'aac':
-        print('AAC audio: copying without re-encoding', flush=True)
-        return ['-c:a', 'copy']
-    return ['-c:a', 'aac', '-b:a', '192k']
+def stealth_audio_filter_chain(sample_rate=48000, delay_ms=0, stealth=False):
+    """Clean original audio without pitch shift, echo, or frequency modulation."""
+    parts = []
+    if delay_ms > 0:
+        parts.append(f"adelay={delay_ms}:all=1")
+    parts.append("volume=1.0")
+    return ",".join(parts)

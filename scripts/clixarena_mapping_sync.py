@@ -1,27 +1,20 @@
 """Remove only mappings whose individual file status is confirmed missing twice."""
 import base64,json,os,re,time,urllib.request,urllib.error,urllib.parse
-from clixarena_video import api,decrypt_mappings,encrypt_mappings,mask,NoRedirect
+from clixarena_video import decrypt_mappings, encrypt_mappings, mask, NoRedirect
 
+def missing_ids(ids, result):
+    if not isinstance(result, dict):
+        return set()
+    return {fid for fid in ids if isinstance(result.get(fid), dict) and type(result[fid].get('status')) is int and result[fid]['status'] == 404}
 
-def missing_ids(ids,result):
-    if not isinstance(result,dict):return set()
-    return {fid for fid in ids if isinstance(result.get(fid),dict) and type(result[fid].get('status')) is int and result[fid]['status']==404}
-
-
-def confirmed_missing(ids,check,pause=time.sleep):
-    first=missing_ids(ids,check(ids))
-    if not first:return set()
+def confirmed_missing(ids, check, pause=time.sleep):
+    first = missing_ids(ids, check(ids))
+    if not first:
+        return set()
     pause(5)
-    return first & missing_ids(first,check(sorted(first)))
+    return first & missing_ids(first, check(sorted(first)))
 
-
-def streamtape_id(row):
-    providers=row.get('providers',{})
-    if isinstance(providers,dict) and isinstance(providers.get('streamtape'),dict):return providers['streamtape'].get('file_id')
-    return row.get('file_id')
-
-
-HOSTS={'streamtape':'file_id','abyss':'abyss_id','streamhg':'streamhg_id','telegram':'telegram_id'}
+HOSTS = {'abyss': 'abyss_id', 'streamtape': 'file_id'}
 
 
 class SyncError(ValueError):
@@ -147,59 +140,27 @@ def abyss_file_missing(fid,status,body):
 
 def collect_missing(rows,pause=time.sleep):
     ids={host:sorted({host_ids(row)[host] for row in rows if host in host_ids(row)}) for host in HOSTS}
-    missing={host:set() for host in HOSTS};failed=[]
-    for host in HOSTS:
-        if not ids[host]:continue
+    missing={'abyss':set()};failed=[]
+    host='abyss'
+    if ids[host]:
         try:
-            if host=='streamtape':
-                login,key=os.environ['STREAMTAPE_LOGIN'],os.environ['STREAMTAPE_KEY']
-                if not login or not key:raise ValueError()
-                def check(batch):return api('file/info',{'login':login,'key':key,'file':','.join(batch)})
-                for offset in range(0,len(ids[host]),100):
-                    missing[host].update(confirmed_missing(ids[host][offset:offset+100],check,pause))
-            elif host=='streamhg':
-                from clixarena_hosts import streamhg_api
-                key=os.environ['STREAMHG_API_KEY']
-                if not key:raise ValueError()
-                account=streamhg_api('account/info',key)
-                if not isinstance(account.get('result'),dict) or not account['result'].get('login'):
-                    raise SyncError('StreamHG account identity could not be verified')
-                candidates=set()
-                for offset in range(0,len(ids[host]),100):
-                    batch=ids[host][offset:offset+100]
-                    first=streamhg_missing(batch,streamhg_api('file/info',key,{'file_code':','.join(batch)}))
-                    if first:
-                        pause(5)
-                        candidates.update(first & streamhg_missing(first,streamhg_api('file/info',key,{'file_code':','.join(sorted(first))})))
-                if candidates:
-                    bulk_guard(len(ids[host]),candidates)
-                    deleted=streamhg_deleted(streamhg_api('file/deleted',key,{'last':168}))
+            query,headers=abyss_auth()
+            status,body=read_json('https://api.abyss.to/v1/about'+query,headers=headers,stage='Abyss quota lookup')
+            if status!=200 or not abyss_account_verified(body):
+                raise SyncError('Abyss quota API response format could not be verified (HTTP '+str(status)+')')
+            for fid in ids[host]:
+                url='https://api.abyss.to/v1/files/'+fid+query
+                status,body=read_json(url,True,headers=headers,stage='Abyss file lookup')
+                if abyss_file_missing(fid,status,body):
                     pause(5)
-                    deleted &= streamhg_deleted(streamhg_api('file/deleted',key,{'last':168}))
-                    missing[host]=candidates & deleted
-                    if candidates-deleted:
-                        raise SyncError('StreamHG file-info missing results were not confirmed by account deleted-files history')
-            elif host=='telegram':
-                # Telegram files in private storage channels do not expire or get deleted due to inactivity.
-                print(host+' checked: '+str(len(ids[host]))+' file(s); confirmed missing: 0. No IDs or URLs logged.')
-            else:
-                query,headers=abyss_auth()
-                status,body=read_json('https://api.abyss.to/v1/about'+query,headers=headers,stage='Abyss quota lookup')
-                if status!=200 or not abyss_account_verified(body):
-                    raise SyncError('Abyss quota API response format could not be verified (HTTP '+str(status)+')')
-                for fid in ids[host]:
-                    url='https://api.abyss.to/v1/files/'+fid+query
-                    status,body=read_json(url,True,headers=headers,stage='Abyss file lookup')
-                    if abyss_file_missing(fid,status,body):
-                        pause(5)
-                        status,body=read_json(url,True,headers=headers,stage='Abyss repeated file lookup')
-                        if abyss_file_missing(fid,status,body):missing[host].add(fid)
-                        elif status!=200 or not isinstance(body,dict) or body.get('id')!=fid:
-                            raise SyncError('Abyss repeated file lookup could not be verified (HTTP '+str(status)+')')
-                    elif status!=200:
-                        raise SyncError('Abyss file lookup could not confirm a file-specific deletion (HTTP '+str(status)+')')
-                    elif not isinstance(body,dict) or body.get('id')!=fid:
-                        raise SyncError('Abyss file lookup returned an unverified file identity (HTTP 200)')
+                    status,body=read_json(url,True,headers=headers,stage='Abyss repeated file lookup')
+                    if abyss_file_missing(fid,status,body):missing[host].add(fid)
+                    elif status!=200 or not isinstance(body,dict) or body.get('id')!=fid:
+                        raise SyncError('Abyss repeated file lookup could not be verified (HTTP '+str(status)+')')
+                elif status!=200:
+                    raise SyncError('Abyss file lookup could not confirm a file-specific deletion (HTTP '+str(status)+')')
+                elif not isinstance(body,dict) or body.get('id')!=fid:
+                    raise SyncError('Abyss file lookup returned an unverified file identity (HTTP 200)')
             bulk_guard(len(ids[host]),missing[host])
             print(host+' checked: '+str(len(ids[host]))+' file(s); confirmed missing: '+str(len(missing[host]))+'. No IDs or URLs logged.')
         except Exception as error:
@@ -213,7 +174,7 @@ def main():
     try:
         repo=os.environ['GITHUB_REPOSITORY'];ref=os.environ['GITHUB_REF_NAME'];token=os.environ['MAPPING_GITHUB_TOKEN']
         if not token or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repo):raise ValueError()
-        for value in (token,os.getenv('STREAMTAPE_LOGIN'),os.getenv('STREAMTAPE_KEY'),os.getenv('STREAMHG_API_KEY'),os.getenv('ABYSS_API_KEY'),os.getenv('ABYSS_AUTH_TOKEN'),os.getenv('ABYSS_EMAIL'),os.getenv('ABYSS_PASSWORD')):
+        for value in (token,os.getenv('ABYSS_API_KEY'),os.getenv('ABYSS_AUTH_TOKEN'),os.getenv('ABYSS_EMAIL'),os.getenv('ABYSS_PASSWORD')):
             if value:mask(value)
         endpoint='https://api.github.com/repos/'+repo+'/contents/mappings.json'
         opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())

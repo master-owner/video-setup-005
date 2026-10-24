@@ -128,13 +128,11 @@ def prepare(destination, streams, audio_map, duration, options, language='eng', 
     if method=='soft':shutil.copyfile('sinhala.srt',root/'subtitle.srt')
     assets=root/'assets';assets.mkdir(exist_ok=True)
     (assets/'ready.txt').write_text('Worker assets',encoding='utf-8')
-    if Path('intro-voice-processed.m4a').is_file():
-        shutil.copyfile('intro-voice-processed.m4a', root/'intro-voice-processed.m4a')
     if method=='burn':
         for filename in ('subtitles.ass','intro.ass','title-logo-display.png'):
             if Path(filename).is_file():shutil.copyfile(filename,assets/filename)
         if Path('fonts').is_dir():shutil.copytree('fonts',assets/'fonts',dirs_exist_ok=True)
-    render={key:options[key] for key in ('parts','layout','start','duration','subtitle_enabled','watermark_enabled','okru_stealth') if key in options}
+    render={key:options[key] for key in ('parts','layout','start','duration','subtitle_enabled','watermark_enabled','okru_stealth','intro_lead_in') if key in options}
     render['content_size']=[cw,ch]
     data=dict(version=1,method=method,count=len(parts),starts=starts,width=width,height=height,content=[cw,ch],
               duration=duration,packets=None,validation='worker-receipts',crf=options['crf'],preset=options['preset'],
@@ -170,31 +168,28 @@ def companion():
         expected_subs=data['subtitle_count'] if method=='transfer' else 0
         if len(audios)!=data['audio_count'] or len(subs)!=expected_subs:
             raise RuntimeError('Source companion track validation failed; upload was not started.')
+        from clixarena_features import stealth_audio_filter_chain
         render_cfg=data.get('render',{})
         stealth=bool(render_cfg.get('okru_stealth'))
-        vo_file=ROOT/'intro-voice-processed.m4a'
-        if method!='transfer' and len(audios)==1 and (stealth or vo_file.is_file()):
+        lead_in=float(render_cfg.get('intro_lead_in',0) or 0) if method=='burn' else 0.0
+        total_dur=float(data['duration'])+lead_in
+        if method!='transfer' and len(audios)==1 and (stealth or lead_in>0):
             sr=int(audios[0].get('sample_rate') or 48000)
-            stealth_af=f"asetrate={sr}*0.97,aresample={sr},atempo=1/0.97,highpass=f=35,lowpass=f=15500," if stealth else ""
-            if vo_file.is_file():
-                delay_ms=max(0,int(round(float(render_cfg.get('start',5))*1000)))
-                fc=f"[0:a:0]{stealth_af}volume=1.0[maina];[1:a:0]adelay={delay_ms}|{delay_ms},volume=1.35[voa];[maina][voa]amix=inputs=2:duration=first:dropout_transition=0[aout]"
-                args=['-i',source,'-i',vo_file,'-filter_complex',fc,'-map','[aout]','-c:a','aac','-b:a','192k']
-                print('Companion audio: mixing Sinhala male voiceover and anti-Content-ID audio filter',flush=True)
-            else:
-                args=['-i',source,'-map','0:a:0','-af',stealth_af.rstrip(','),'-c:a','aac','-b:a','192k']
-                print('Companion audio: applying anti-Content-ID audio pitch filter',flush=True)
+            delay_ms=max(0,int(round(lead_in*1000)))
+            af_chain=stealth_audio_filter_chain(sample_rate=sr, delay_ms=delay_ms, stealth=stealth)
+            args=['-i',source,'-map','0:a:0','-af',af_chain,'-c:a','aac','-b:a','192k']
+            print(f'Companion audio: silent intro delay ({lead_in:.1f}s) + deep anti-Content-ID audio filter',flush=True)
         else:
             args=['-i',source,'-map','0:a?']
             for i,stream in enumerate(audios):
-                copy=stream.get('codec_name')=='aac' and not stealth
+                copy=stream.get('codec_name')=='aac'
                 args+=[f'-c:a:{i}','copy' if copy else 'aac']
                 if not copy:
                     bitrate='384k' if method=='transfer' and int(stream.get('channels',2))>2 else '192k'
                     args+=[f'-b:a:{i}',bitrate]
                 print(f'Companion audio track {i}: '+('copying AAC' if copy else 'converting to AAC'),flush=True)
         if method=='transfer':args+=['-map','0:s?','-c:s','copy']
-        ff(*args,'-t',data['duration'],target,label='Preparing AAC companion',duration=data['duration'],timeout=7200)
+        ff(*args,'-t',total_dur,target,label='Preparing AAC companion',duration=total_dur,timeout=7200)
         result=info(target,count=False)
         final_audio=[s for s in result['streams'] if s['codec_type']=='audio']
         final_subs=[s for s in result['streams'] if s['codec_type']=='subtitle']
@@ -214,15 +209,29 @@ def worker(index):
     args=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-i',str(source)]
     previous=Path.cwd()
     try:
+        lead_in = float(data.get('render', {}).get('intro_lead_in', 0) or 0) if data.get('method','soft')=='burn' else 0.0
         if data.get('method','soft')=='burn':
             assets=(ROOT/'assets').resolve();os.chdir(assets)
-            offset=data['starts'][index];render=data['render'];logo=data.get('logo_size')
+            offset=data['starts'][index];render=dict(data['render'], chunk_mode=True);logo=data.get('logo_size')
             end=offset+float(metadata['format']['duration'])
-            if logo and offset<render['start']+render['duration'] and end>render['start']:
-                args+=['-itsoffset',str(render['start']),'-loop','1','-framerate','30','-t',str(render['duration']),'-i','title-logo-display.png']
-            else:logo=None
-            graph=filter_graph(width,height,render,logo)
-            graph=graph.replace('[0:v:0]',f'[0:v:0]setpts=PTS-STARTPTS+{offset}/TB,',1)
+            if lead_in > 0:
+                if index == 0 and logo:
+                    args+=['-itsoffset','0','-loop','1','-framerate','30','-t',str(render['duration']),'-i','title-logo-display.png']
+                else:
+                    logo = None
+                graph=filter_graph(width,height,render,logo)
+                if index == 0:
+                    graph=graph.replace('[0:v:0]',f'[0:v:0]tpad=start_duration={lead_in}:start_mode=add:color=black,setpts=PTS-STARTPTS,',1)
+                else:
+                    graph=graph.replace(',ass=intro.ass:fontsdir=fonts:shaping=complex','')
+                    graph=graph.replace('[art]ass=intro.ass:fontsdir=fonts:shaping=complex[video]','[art]null[video]')
+                    graph=graph.replace('[0:v:0]',f'[0:v:0]setpts=PTS-STARTPTS+{offset + lead_in}/TB,',1)
+            else:
+                if logo and offset<render['start']+render['duration'] and end>render['start']:
+                    args+=['-itsoffset',str(render['start']),'-loop','1','-framerate','30','-t',str(render['duration']),'-i','title-logo-display.png']
+                else:logo=None
+                graph=filter_graph(width,height,render,logo)
+                graph=graph.replace('[0:v:0]',f'[0:v:0]setpts=PTS-STARTPTS+{offset}/TB,',1)
             graph+=';[video]setpts=PTS-STARTPTS[chunk]'
             args+=['-map','[chunk]','-filter_complex',graph]
         else:
@@ -230,13 +239,16 @@ def worker(index):
             args+=['-map','0:v:0','-vf',filters]
         args+=['-an','-sn','-dn','-c:v','libx264','-preset',data['preset'],'-crf',str(data['crf']),'-pix_fmt','yuv420p','-fps_mode','passthrough','-map_metadata','-1']
         print(f'Encoding {data.get("method","soft")} chunk {index+1} of {data["count"]}',flush=True)
-        encode_progress(args,float(metadata['format']['duration']),output=target)
+        encode_progress(args,float(metadata['format']['duration'])+(lead_in if index==0 else 0.0),output=target)
     finally:os.chdir(previous)
     result=info(target)
-    if packets(result)!=expected or (video(result)['width'],video(result)['height'])!=(width,height):
+    actual_pkts=packets(result)
+    if index == 0 and lead_in > 0 and actual_pkts > expected:
+        expected = actual_pkts
+    if actual_pkts!=expected or (video(result)['width'],video(result)['height'])!=(width,height):
         raise RuntimeError('Chunk frame validation failed; upload was not started')
     (ROOT/f'encoded-{index:02d}.json').write_text(json.dumps(dict(version=1,index=index,
-        source_packets=expected,encoded_packets=packets(result))),encoding='utf-8')
+        source_packets=expected,encoded_packets=actual_pkts)),encoding='utf-8')
     print('Chunk encoding and frame validation complete',flush=True)
 
 
@@ -260,10 +272,12 @@ def merge():
         expected=data['packets']
         if sum(packets(info(p)) for p in paths)!=expected:
             raise RuntimeError('Missing video frames in runner outputs; upload was not started.')
+    lead_in=float(data.get('render',{}).get('intro_lead_in',0) or 0) if data.get('method','soft')=='burn' else 0.0
+    total_dur=float(data['duration'])+lead_in
     listing = ROOT / 'concat.txt'
     listing.write_text(''.join(f"file '{p.name}'\n" for p in paths), encoding='utf-8')
     ff('-f','concat','-safe',1,'-i',listing,'-map','0:v:0','-c','copy',ROOT/'joined.mp4',
-       label='Joining encoded video chunks',duration=data['duration'])
+       label='Joining encoded video chunks',duration=total_dur)
     method=data.get('method','soft')
     args=['-i',ROOT/'joined.mp4'];maps=['-map','0:v:0']
     if method=='transfer' and (data['audio_count'] or data['subtitle_count']):
@@ -282,13 +296,13 @@ def merge():
             args+=['-sub_charenc','UTF-8','-i',ROOT/'subtitle.srt']
             maps+=['-map',f'{2 if data["audio"] else 1}:s:0','-c:s','mov_text','-metadata:s:s:0','language='+data['language'],'-disposition:s:0','0']
     args+=maps
-    args+=['-c:v','copy','-map_metadata','-1','-map_chapters','-1','-t',data['duration'],'-movflags','+faststart']
+    args+=['-c:v','copy','-map_metadata','-1','-map_chapters','-1','-t',total_dur,'-movflags','+faststart']
     print('Joining runner outputs without another video encode; restoring audio/subtitle tracks',flush=True)
-    ff(*args,'clixarena.mp4',label='Restoring audio and subtitles',duration=data['duration'])
+    ff(*args,'clixarena.mp4',label='Restoring audio and subtitles',duration=total_dur)
     result=info('clixarena.mp4');v=video(result)
     subs=[t for t in result['streams'] if t['codec_type']=='subtitle']
     audios=[t for t in result['streams'] if t['codec_type']=='audio']
-    if (packets(result)!=expected or abs(float(result['format']['duration'])-data['duration'])>2
+    if ((packets(result)!=expected if lead_in==0 else abs(packets(result)-expected)>2) or abs(float(result['format']['duration'])-total_dur)>2
         or v['codec_name']!='h264' or (v['width'],v['height'])!=(data['width'],data['height'])
         or len(audios)!=data['audio_count'] or any(t['codec_name']!='aac' for t in audios)
         or len(subs)!=data['subtitle_count'] or any(t['codec_name']!='mov_text' for t in subs)
@@ -300,7 +314,7 @@ def merge():
     if os.getenv('SAMPLE_ONLY','false').lower()=='true':
         shutil.copyfile('clixarena.mp4',preview/'sample.mp4')
         return
-    values = {name:os.getenv(name,'') for name in ('STREAMTAPE_LOGIN','STREAMTAPE_KEY','ABYSS_API_KEY','STREAMHG_API_KEY','OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_API_ID','TELEGRAM_API_HASH')}
+    values = {'ABYSS_API_KEY': os.getenv('ABYSS_API_KEY', '')}
     for value in values.values(): mask(value)
     complete_upload(Path('clixarena.mp4'),output_filename(os.getenv('OUTPUT_NAME','CLIXARENA.mp4')),values)
 

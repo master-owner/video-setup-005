@@ -26,10 +26,10 @@ import urllib.parse
 import urllib.request
 from clixarena_features import (settings, subtitle_asset, audio_selection, fetch_logo,
                                 write_intro, video_dimensions, fitted_dimensions, filter_graph, encode_progress, logo_dimensions,
-                                synthesize_intro_voiceover, okru_stealth_audio_args)
+                                shift_srt_timestamps, stealth_audio_filter_chain)
 from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
-from clixarena_hosts import HostError,selected_host,selected_hosts,merge_provider_mapping,upload_streamhg,verify_streamhg,upload_abyss,verify_abyss,upload_okru,verify_okru
+from clixarena_hosts import HostError, selected_host, selected_hosts, merge_provider_mapping, upload_abyss, verify_abyss
 
 def download_source(url,target,limit,root):
     descriptor=json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}').get('torrent')
@@ -490,67 +490,9 @@ def prepare_ass(family='Iskoola Pota'):
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
-def api(endpoint, values):
-    # Credentials go in a POST body, not a URL or command line.
-    data = urllib.parse.urlencode(values).encode()
-    req = urllib.request.Request('https://api.streamtape.com/' + endpoint, data=data)
-    # No redirects: do not forward credentials to a different endpoint.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(req, timeout=60) as response:
-        body = json.loads(response.read(1024 * 1024))
-    if body.get('status') != 200 or not (isinstance(body.get('result'), dict) or body.get('result') is True):
-        raise ValueError('Streamtape API rejected the request')
-    return body['result']
-
-
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
-
-
-def upload(path, login, key):
-    with timed_stage('Streamtape checksum preparation'):
-        with path.open('rb') as file:
-            digest = hashlib.file_digest(file, 'sha256').hexdigest()
-    result = timed_call('Streamtape upload-server lookup',api,'file/ul', {'login': login, 'key': key, 'sha256': digest})
-    url = result.get('url', '')
-    validate_url(url)
-    mask(url)
-    # curl streams the multipart file. URL is supplied over stdin, never argv.
-    escaped = url.replace('\\', '\\\\').replace('"', '\\"')
-    config = 'url = "' + escaped + '"\n'
-    response = run_upload(['curl', '--config', '-', '--silent', '--fail',
-                               '--proto', '=https', '--connect-timeout', '30',
-                               '--max-time', '3600', '--form', 'file1=@' + str(path)],
-                              input=config, capture_output=True, text=True, timeout=3610,label='Streamtape',size=file_size(path))
-    if response.returncode:
-        raise ValueError('Upload failed or timed out; check account before rerunning')
-    body = json.loads(response.stdout)
-    if body.get('status') != 200:
-        raise ValueError('Upload API reported failure')
-    file_id = body.get('result', {}).get('id', '')
-    if not isinstance(file_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
-        raise ValueError('Upload response has no valid file ID; check account before rerunning')
-    info = timed_call('Streamtape uploaded-file verification',api,'file/info', {'login': login, 'key': key, 'file': file_id}).get(file_id, {})
-    if info.get('status') != 200 or int(info.get('size', -1)) != path.stat().st_size:
-        raise ValueError('Uploaded file could not be verified; check account before rerunning')
-    return file_id
-
-
-def verify_filename(file_id, output_name, login, key, attempts=6, pause=time.sleep):
-    # Read-only polling tolerates delayed metadata; never retry upload or rename.
-    for attempt in range(attempts):
-        try:
-            result = api('file/info', {'login': login, 'key': key, 'file': file_id})
-            info = result.get(file_id, {}) if isinstance(result, dict) else {}
-            if isinstance(info, dict) and info.get('status') == 200 and info.get('name') == output_name:
-                return True
-        except Exception:
-            pass  # Response/error text may contain credentials. Never log it.
-        if attempt + 1 < attempts:
-            print('Waiting for Streamtape filename metadata to update', flush=True)
-            pause(3)
-    return False
 
 
 def audio_encoding_args(streams, audio_map):
@@ -743,7 +685,7 @@ def external_subtitle_mapping(root=None):
     return {'subtitle_url': url, 'subtitle_language': asset['language'], 'subtitle_format': 'srt'}
 
 
-def merge_mapping(rows, identity, file_id, provider='streamtape', quality_ids=None):
+def merge_mapping(rows, identity, file_id, provider='abyss', quality_ids=None):
     return merge_provider_mapping(rows,identity,file_id,provider,quality_ids=quality_ids)
 
 
@@ -782,7 +724,7 @@ def decrypt_mappings(document):
     return rows
 
 
-def save_mapping(file_id,provider='streamtape',quality_ids=None):
+def save_mapping(file_id,provider='abyss',quality_ids=None):
     identity = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}').get('mapping')
     if identity is None:
         return
@@ -845,8 +787,8 @@ _UPLOAD_VERIFIER = ContextVar('upload_verifier', default=None)
 
 
 def finish_provider_upload(provider,file_id,key,size,output_name):
-    label={'abyss':'Abyss','streamhg':'StreamHG','okru':'Ok.ru'}[provider]
-    verify={'abyss':verify_abyss,'streamhg':verify_streamhg,'okru':verify_okru}[provider]
+    label='Abyss'
+    verify=verify_abyss
     verified,named=timed_call(label+' metadata verification',verify,file_id,key,size,output_name)
     if not verified:print('::warning::'+label+' upload accepted; metadata verification is pending. Check the host manager before uploading again.',flush=True)
     elif not named:print('::warning::'+label+' upload verified, but the stored filename differs. Check the host manager; do not upload again.',flush=True)
@@ -859,114 +801,37 @@ def verify_accepted_upload(provider,file_id,key,size,output_name):
     submit=_UPLOAD_VERIFIER.get()
     if submit is None:
         return finish_provider_upload(provider,file_id,key,size,output_name)
-    print({'abyss':'Abyss','streamhg':'StreamHG','okru':'Ok.ru'}[provider]+' accepted; checking metadata alongside the next destination. File uploads remain sequential.',flush=True)
+    print('Abyss accepted; checking metadata alongside the next destination. File uploads remain sequential.',flush=True)
     submit(provider,finish_provider_upload,provider,file_id,key,size,output_name)
 
 
 def complete_upload(path, output_name, values):
-    providers=selected_hosts(json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}'))
-    if len(providers)==1:
-        return complete_upload_one(path,output_name,values,providers[0])
-    failures=[]
-    pending=[]
-    # Only read-only metadata checks overlap. Uploads and mapping mutations
-    # stay in the user's selected order; all checks finish before job success.
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        def submit(provider,fn,*args):pending.append((provider,executor.submit(fn,*args)))
-        token=_UPLOAD_VERIFIER.set(submit)
-        try:
-            for index,provider in enumerate(providers,1):
-                print('Upload destination '+str(index)+' of '+str(len(providers))+': '+provider,flush=True)
-                try:
-                    complete_upload_one(path,output_name,values,provider)
-                except Exception as error:
-                    failures.append(provider)
-                    # Only our deliberately safe errors may reach the log.
-                    if isinstance(error,DownloadError):print('::warning::'+str(error),flush=True)
-                    print('::warning::'+provider+' upload or finalization could not be confirmed. Check that host before retrying; no automatic upload retry.',flush=True)
-        finally:
-            _UPLOAD_VERIFIER.reset(token)
-        for provider,future in pending:
-            try:future.result()
-            except Exception:
-                if provider not in failures:failures.append(provider)
-                print('::warning::'+provider+' metadata check failed after upload acceptance. Check that host; do not upload again.',flush=True)
-    if failures:
-        raise DownloadError('Upload incomplete for: '+', '.join(failures)+'. Other accepted uploads and mapping receipts are preserved. Do not rerun the whole job blindly.')
-    print('All selected upload destinations completed.',flush=True)
-
-
-def complete_upload_one(path, output_name, values, provider):
-    if provider=='abyss':
-        print('Uploading video to Abyss',flush=True)
-        try:file_id=upload_abyss(path,output_name,values['ABYSS_API_KEY'],mask)
-        except Exception:raise DownloadError('Abyss upload failed or response was not verified. Check Abyss before uploading again; no automatic retry.') from None
-        print('Abyss upload accepted',flush=True)
-        mapping_saved=True
-        try:timed_call('Abyss mapping save',save_mapping,file_id,'abyss')
-        except Exception:
-            mapping_saved=False
-            print('::warning::Abyss upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.',flush=True)
-        if not mapping_saved:raise DownloadError('Abyss upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
-        verify_accepted_upload('abyss',file_id,values['ABYSS_API_KEY'],path.stat().st_size,output_name)
-        return
-
-    if provider=='okru':
-        print('Uploading video to Ok.ru with anonymized numeric title',flush=True)
-        try:
-            pub_k=values.get('OK_PUBLIC_KEY') or os.getenv('OK_PUBLIC_KEY','')
-            sec_k=values.get('OK_SECRET_KEY') or os.getenv('OK_SECRET_KEY','')
-            acc_t=values.get('OK_ACCESS_TOKEN') or os.getenv('OK_ACCESS_TOKEN','')
-            file_id=upload_okru(path,output_name,pub_k,sec_k,acc_t,mask)
-        except HostError as error:raise DownloadError(str(error)) from None
-        except Exception as e:raise DownloadError('Ok.ru upload failed: ' + str(e)) from None
-        print('Ok.ru upload accepted: ' + file_id,flush=True)
-        mapping_saved=True
-        try:timed_call('Ok.ru mapping save',save_mapping,file_id,'okru')
-        except Exception:
-            mapping_saved=False
-            print('::warning::Ok.ru upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.',flush=True)
-        if not mapping_saved:raise DownloadError('Ok.ru upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
-        verify_accepted_upload('okru',file_id,pub_k,path.stat().st_size,output_name)
-        return
-
-    if provider=='streamhg':
-        print('Uploading video to StreamHG',flush=True)
-        try:file_id=upload_streamhg(path,output_name,values['STREAMHG_API_KEY'],mask,validate=validate_url)
-        except HostError as error:raise DownloadError(str(error)) from None
-        except Exception:raise DownloadError('StreamHG upload failed or response was not verified. Check StreamHG before uploading again; no automatic retry.') from None
-        print('StreamHG upload accepted',flush=True)
-        mapping_saved=True
-        try:timed_call('StreamHG mapping save',save_mapping,file_id,'streamhg')
-        except Exception:
-            mapping_saved=False
-            print('::warning::StreamHG upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.',flush=True)
-        if not mapping_saved:raise DownloadError('StreamHG upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
-        verify_accepted_upload('streamhg',file_id,values['STREAMHG_API_KEY'],path.stat().st_size,output_name)
-        return
-
-    print('Uploading video to Streamtape', flush=True)
-    file_id = upload(path, values['STREAMTAPE_LOGIN'], values['STREAMTAPE_KEY'])
+    print('Uploading video to Abyss', flush=True)
     try:
-        timed_call('Streamtape mapping save',save_mapping,file_id)
+        file_id = upload_abyss(path, output_name, values['ABYSS_API_KEY'], mask)
     except Exception:
-        raise DownloadError('Streamtape upload accepted, but mapping save failed. Recover the encrypted mapping receipt; do not upload again.') from None
-    # Keep user names out of shell, FFmpeg paths and curl form syntax.
-    renamed = api('file/rename', {'login': values['STREAMTAPE_LOGIN'],
-                  'key': values['STREAMTAPE_KEY'], 'file': file_id, 'name': output_name})
-    if renamed is not True:
-        raise ValueError('Streamtape filename update failed')
-    filename_verified = timed_call('Streamtape filename verification',verify_filename,file_id,output_name,values['STREAMTAPE_LOGIN'],values['STREAMTAPE_KEY'])
-    if not filename_verified:
-        print('::warning::Upload verified and rename accepted, but the final filename could not be confirmed. Check the filename in Streamtape file manager; do not rerun just for this warning.')
-    # Do not construct, print, summarize or export a Streamtape video URL/ID.
-    print('Upload verified. Find the video in your Streamtape file manager.', flush=True)
+        raise DownloadError('Abyss upload failed or response was not verified. Check Abyss before uploading again; no automatic retry.') from None
+    print('Abyss upload accepted', flush=True)
+    mapping_saved = True
+    try:
+        timed_call('Abyss mapping save', save_mapping, file_id, 'abyss')
+    except Exception:
+        mapping_saved = False
+        print('::warning::Abyss upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.', flush=True)
+    if not mapping_saved:
+        raise DownloadError('Abyss upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
+    verify_accepted_upload('abyss', file_id, values['ABYSS_API_KEY'], path.stat().st_size, output_name)
+    print('Abyss upload completed successfully.', flush=True)
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as file:
-            file.write('upload_verified=true\nrename_accepted=true\nfilename_verified=' + str(filename_verified).lower() + '\n')
+            file.write('upload_verified=true\nupload_host=abyss\n')
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
-            file.write('### Upload verified\nRename request accepted. Final filename ' + ('verified' if filename_verified else 'not confirmed; check it in Streamtape file manager. Do not re-upload solely for this warning') + '.\nFind the video in your Streamtape file manager. Video URLs and file IDs are not included in logs, summaries or outputs. Playback processing may still be pending.\n')
+            file.write('### Abyss upload verified\nUpload accepted and mapping saved.\n')
+
+
+def complete_upload_one(path, output_name, values, provider='abyss'):
+    return complete_upload(path, output_name, values)
 
 def selected_runner_mode(layout,environment=None):
     # GitHub injects the workflow input's default "single" even when the UI
@@ -984,7 +849,7 @@ def main():
     print('CLIXARENA pipeline version 2026.10.20-parallel-preparation', flush=True)
     try:
         values = {name: os.getenv(name, '') for name in
-                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'STREAMTAPE_LOGIN', 'STREAMTAPE_KEY','STREAMHG_API_KEY','ABYSS_API_KEY','OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN')}
+                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY')}
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):
@@ -1019,12 +884,10 @@ def main():
         if method == 'soft':
             required = tuple(name for name in required if name != 'FONT_PATH')
         if method == 'transfer':
-            required = ('VIDEO_URL', 'STREAMTAPE_LOGIN', 'STREAMTAPE_KEY')
-        providers=selected_hosts(json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}'))
-        required=tuple(n for n in required if n not in ('STREAMTAPE_LOGIN','STREAMTAPE_KEY','STREAMHG_API_KEY','ABYSS_API_KEY','OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN'))
+            required = ('VIDEO_URL', 'ABYSS_API_KEY')
+        required = tuple(n for n in required if n != 'ABYSS_API_KEY')
         if not sample_only:
-            for provider in providers:
-                required+=('OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN') if provider=='okru' else ('ABYSS_API_KEY',) if provider=='abyss' else ('STREAMHG_API_KEY',) if provider=='streamhg' else ('STREAMTAPE_LOGIN','STREAMTAPE_KEY')
+            required += ('ABYSS_API_KEY',)
         missing = [name for name in required if not values[name].strip()]
         if missing:
             print('::error::Missing required configuration: ' + ', '.join(missing) +
@@ -1073,7 +936,7 @@ def main():
                         raise DownloadError('Prepared MP4 has unexpected container or codecs; upload stopped.')
                     if abs(duration - float(output['format']['duration'])) > 2:
                         raise DownloadError('Prepared MP4 duration differs from the source; upload stopped.')
-                    stage = 'Streamtape MP4 upload and filename update'
+                    stage = 'Abyss MP4 upload'
                     complete_upload(Path('clixarena.mp4'), output_name, values)
                 finally:
                     os.chdir(original)
@@ -1121,7 +984,12 @@ def main():
                         if 'Algerian' not in command(['fc-scan', '--format', '%{family}', 'fonts/algerian.ttf']).split(','):
                             print('::error::fonts/Algerian.ttf must be the Algerian font. No font substitution is used.')
                             raise ValueError('Invalid Algerian font')
+                    intro_lead_in = float(options['duration']) if (any(options['parts'].values()) and options.get('intro_delay')) else 0.0
+                    options['intro_lead_in'] = intro_lead_in
                     if burn_subtitles:
+                        if intro_lead_in > 0:
+                            print(f'Shifting subtitle timestamps by +{intro_lead_in:.1f}s so movie starts after silent intro...', flush=True)
+                            shift_srt_timestamps('subtitles.srt', intro_lead_in)
                         prepare_ass(family)
                         shaping_test = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'info',
                             '-f', 'lavfi', '-i', 'color=s=320x180:d=0.1', '-vf',
@@ -1141,9 +1009,8 @@ def main():
                         raise ValueError('Nontransparent artwork')
                     logo_size = (int(logo_info['width']), int(logo_info['height']))
                 if options['parts']['name'] or options['parts']['message']:
-                    write_intro(overlay_name, options['start'], options['duration'], options['parts'], options['layout'])
-                if options['parts'].get('message'):
-                    synthesize_intro_voiceover(options['layout'].get('message', ''), options['duration'])
+                    intro_start_ts = 0.0 if options.get('intro_lead_in', 0) > 0 else options['start']
+                    write_intro(overlay_name, intro_start_ts, options['duration'], options['parts'], options['layout'])
                 stage = 'video download and validation'
                 print('Downloading video', flush=True)
                 download_source(values['VIDEO_URL'], Path('source.video'), 12 * 1024**3, root)
@@ -1199,29 +1066,31 @@ def main():
                 else:
                     stage = 'encoding'
                     print('Encoding H.264/AAC'+(' with watermark' if options['watermark_enabled'] else '; watermark disabled') + (' and ' + language_name + ' subtitles' if burn_subtitles else '; subtitles disabled'), flush=True)
+                    lead_in = float(options.get('intro_lead_in', 0) or 0)
+                    total_encode_duration = expected_duration + lead_in
                     filters = filter_graph(width, height, options, logo_size)
                     inputs = ['-threads', '0', '-i', 'source.video']
                     if logo_size:
-                        inputs += ['-itsoffset', str(options['start']), '-loop', '1', '-framerate', '30',
-                                   '-t', str(logo_input_duration), '-i', 'title-logo-display.png']
-                    vo_path = Path('intro-voice-processed.m4a')
+                        logo_st = 0.0 if lead_in > 0 else options['start']
+                        logo_dur = options['duration'] if lead_in > 0 else logo_input_duration
+                        inputs += ['-itsoffset', str(logo_st), '-loop', '1', '-framerate', '30',
+                                   '-t', str(logo_dur), '-i', 'title-logo-display.png']
                     has_audio = any(s.get('codec_type') == 'audio' for s in source['streams'])
-                    if vo_path.is_file() and has_audio:
-                        vo_idx = 2 if logo_size else 1
-                        inputs += ['-i', str(vo_path)]
-                        delay_ms = max(0, int(round(options['start'] * 1000)))
+                    if has_audio and (lead_in > 0 or options.get('okru_stealth')):
                         sel_a = [s for s in source['streams'] if s.get('codec_type') == 'audio'][int(audio_map.split(':')[-1].rstrip('?'))]
                         sr = int(sel_a.get('sample_rate') or 48000)
-                        stealth_af = f"asetrate={sr}*0.97,aresample={sr},atempo=1/0.97,highpass=f=35,lowpass=f=15500," if options.get('okru_stealth') else ""
-                        filters += f";[{audio_map}]{stealth_af}volume=1.0[maina];[{vo_idx}:a:0]adelay={delay_ms}|{delay_ms},volume=1.35[voa];[maina][voa]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+                        delay_ms = max(0, int(round(lead_in * 1000)))
+                        af_chain = stealth_audio_filter_chain(sample_rate=sr, delay_ms=delay_ms, stealth=bool(options.get('okru_stealth')))
+                        filters += f";[{audio_map}]{af_chain}[aout]"
                         a_map_args = ['-map', '[aout]', '-c:a', 'aac', '-b:a', '192k']
                     else:
-                        a_map_args = ['-map', audio_map] + okru_stealth_audio_args(source['streams'], audio_map, options)
+                        a_map_args = ['-map', audio_map] + audio_encoding_args(source['streams'], audio_map)
                     encode_progress(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + inputs +
                              ['-filter_complex_threads', '4', '-map', '[video]'] + a_map_args + ['-filter_complex', filters,
                              '-c:v', 'libx264', '-preset', options['preset'], '-crf', str(options['crf']),
                              '-pix_fmt', 'yuv420p',
-                             '-t', str(expected_duration), '-movflags', '+faststart'], expected_duration)
+                             '-t', str(total_encode_duration), '-movflags', '+faststart'], total_encode_duration)
+                    expected_duration = total_encode_duration
                 stage = 'output MP4 validation'
                 output = probe('clixarena.mp4')
                 streams = output['streams']
@@ -1248,10 +1117,10 @@ def main():
                     preview = original / 'preview'
                     preview.mkdir(exist_ok=True)
                     shutil.copyfile('clixarena.mp4', preview / 'sample.mp4')
-                    print('Sample ready: download CLIXARENA-sample from this run artifacts. No Streamtape upload performed.')
+                    print('Sample ready: download CLIXARENA-sample from this run artifacts. No upload performed.')
                     if os.getenv('GITHUB_STEP_SUMMARY'):
                         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
-                            file.write('### 3-minute sample ready\nDownload **CLIXARENA-sample** from this run artifacts. Inspect subtitles from 01:18 and watermark. No Streamtape upload performed.\n')
+                            file.write('### 3-minute sample ready\nDownload **CLIXARENA-sample** from this run artifacts. Inspect subtitles from 01:18 and watermark. No upload performed.\n')
                     return 0
                 stage = 'selected host upload and metadata verification'
                 complete_upload(Path('clixarena.mp4'), output_name, values)

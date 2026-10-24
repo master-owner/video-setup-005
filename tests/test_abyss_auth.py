@@ -1,7 +1,11 @@
 import contextlib,io,os,unittest,urllib.error
 from unittest.mock import patch
 import clixarena_mapping_sync as sync
-from test_mapping_sync_all import QUOTA
+QUOTA = {
+    'storageQuota': {'limit': 1000, 'actual': 100, 'usage': 10},
+    'uploadQuota': {'dailyUploadQuota': 500, 'dailyUploadUsed': 50, 'dailyUploadRemaining': 450},
+    'maxUploadSize': 2000
+}
 
 class AbyssAuthTests(unittest.TestCase):
     def test_login_uses_post_and_bearer_without_api_key_query(self):
