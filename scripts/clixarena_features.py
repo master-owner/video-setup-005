@@ -416,7 +416,7 @@ def render_standalone_intro(width, height, options, overlay_name, logo_size=None
     voice_audio = synthesize_intro_voiceover(layout.get('message', ''), duration, sample_rate=sample_rate, channels=channels)
 
     fps_raw = (video_stream or {}).get('r_frame_rate') or '24/1'
-    pix_fmt = (video_stream or {}).get('pix_fmt') or 'yuv420p'
+    pix_fmt = 'yuv420p'  # Match the H.264 output path rather than the source decoder format.
     timescale = str((video_stream or {}).get('time_base', '1/90000')).split('/')[-1]
     if not timescale.isdigit():
         timescale = '90000'
@@ -466,49 +466,79 @@ def render_standalone_intro(width, height, options, overlay_name, logo_size=None
 
 
 def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
-    """Concatenate the rendered standalone intro clip before the main video without re-encoding."""
-    import shutil, subprocess
-    from pathlib import Path
-    intro_p = Path(intro_path).resolve()
-    main_p = Path(main_video_path).resolve()
-    target_p = Path(output_path).resolve() if output_path else main_p
-    temp_out = main_p.parent / 'joined-with-intro.mp4'
-    concat_txt = main_p.parent / 'intro-concat-list.txt'
-    concat_txt.write_text(f"file '{intro_p}'\nfile '{main_p}'\n", encoding='utf-8')
-    try:
-        # Check if main_p has subtitle streams (mov_text)
-        probe_res = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(main_p)], capture_output=True, text=True, timeout=60)
-        streams = json.loads(probe_res.stdout).get('streams', []) if probe_res.returncode == 0 else []
-        has_subs = any(s.get('codec_type') == 'subtitle' for s in streams)
-        intro_probe = subprocess.run(['ffprobe', '-v', 'error', '-show_format', '-of', 'json', str(intro_p)], capture_output=True, text=True, timeout=60)
-        intro_dur = float(json.loads(intro_probe.stdout)['format']['duration']) if intro_probe.returncode == 0 else 8.0
+    """Normalize only the short intro to the encoded main, then validate the join."""
+    import tempfile
+    from fractions import Fraction
+    intro_p, main_p = Path(intro_path).resolve(), Path(main_video_path).resolve()
+    target = Path(output_path).resolve() if output_path else main_p
 
-        if not has_subs:
-            cmd = [
-                'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-                '-f', 'concat', '-safe', '0', '-i', str(concat_txt),
-                '-map_metadata', '-1', '-map_chapters', '-1',
-                '-c', 'copy', '-movflags', '+faststart',
-                str(temp_out)
-            ]
+    def run(args):
+        result = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + args,
+                                capture_output=True, text=True, timeout=900)
+        if result.returncode:
+            raise ValueError('Intro join/validation failed; upload was not started')
+    def probe(path):
+        result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
+                                 '-of', 'json', str(path)], capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            raise ValueError('Cannot inspect intro/main video; upload was not started')
+        return json.loads(result.stdout)
+
+    main = probe(main_p)
+    video = next(s for s in main['streams'] if s['codec_type'] == 'video')
+    audio = [s for s in main['streams'] if s['codec_type'] == 'audio']
+    subs = [s for s in main['streams'] if s['codec_type'] == 'subtitle']
+    if video['codec_name'] != 'h264' or len(audio) > 1 or any(s['codec_name'] != 'aac' for s in audio):
+        raise ValueError('Intro join requires H.264 and at most one AAC audio track')
+    fps = video.get('avg_frame_rate') or video['r_frame_rate']
+    frame_seconds = float(1 / Fraction(fps))
+    duration = float(probe(intro_p)['format']['duration'])
+    # Round to an exact frame boundary for the video concat timeline.
+    duration = round(duration / frame_seconds) * frame_seconds
+    with tempfile.TemporaryDirectory(prefix='intro-join-', dir=main_p.parent) as tmp:
+        tmp = Path(tmp)
+        normalized, joined = tmp/'intro.mp4', tmp/'joined.mp4'
+        args = ['-i', str(intro_p)]
+        intro_audio = any(s['codec_type'] == 'audio' for s in probe(intro_p)['streams'])
+        if audio and not intro_audio:
+            args += ['-f', 'lavfi', '-i', 'anullsrc']
+        args += ['-map', '0:v:0', '-vf',
+                 f"scale={video['width']}:{video['height']}:force_original_aspect_ratio=decrease,pad={video['width']}:{video['height']}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}",
+                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+                 '-pix_fmt', video['pix_fmt'],
+                 '-video_track_timescale', str(Fraction(video['time_base']).denominator)]
+        if audio:
+            a = audio[0]
+            args += ['-map', '0:a:0' if intro_audio else '1:a:0', '-af', 'apad',
+                     '-c:a', 'aac', '-ar', a['sample_rate'], '-ac', str(a['channels'])]
         else:
-            # Concat video and audio via concat demuxer, and shift soft subtitles by intro_dur
-            v_concat_txt = main_p.parent / 'intro-v-concat.txt'
-            v_concat_txt.write_text(f"file '{intro_p}'\nfile '{main_p}'\n", encoding='utf-8')
-            cmd = [
-                'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-                '-f', 'concat', '-safe', '0', '-i', str(v_concat_txt),
-                '-itsoffset', str(intro_dur), '-i', str(main_p),
-                '-map', '0:v:0', '-map', '0:a?', '-map', '1:s?',
-                '-map_metadata', '-1', '-map_chapters', '-1',
-                '-c', 'copy', '-movflags', '+faststart',
-                str(temp_out)
-            ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if res.returncode == 0 and temp_out.is_file() and temp_out.stat().st_size > main_p.stat().st_size:
-            shutil.move(str(temp_out), str(target_p))
-            return intro_dur
-    finally:
-        concat_txt.unlink(missing_ok=True)
-        temp_out.unlink(missing_ok=True)
-    return 0.0
+            args += ['-an']
+        args += ['-t', str(duration), str(normalized)]
+        run(args)
+        # Use the actual normalized container duration for both concat and subtitle offset.
+        duration = float(probe(normalized)['format']['duration'])
+        def quote(path):
+            return str(path).replace("'", "'\\''")
+        listing = tmp/'concat.txt'
+        listing.write_text(f"file '{quote(normalized)}'\nduration {duration:.9f}\nfile '{quote(main_p)}'\n", encoding='utf-8')
+        args = ['-f', 'concat', '-safe', '0', '-i', str(listing)]
+        if subs:
+            args += ['-itsoffset', str(duration), '-i', str(main_p)]
+        args += ['-map', '0:v:0', '-map', '0:a?']
+        if subs:
+            args += ['-map', '1:s?']
+        args += ['-map_metadata', '0', '-map_chapters', '-1', '-c', 'copy',
+                 '-movflags', '+faststart', str(joined)]
+        run(args)
+        result = probe(joined)
+        expected = float(main['format']['duration']) + duration
+        if abs(float(result['format']['duration']) - expected) > max(.25, 3*frame_seconds):
+            raise ValueError('Joined duration mismatch; upload was not started')
+        for kind, count in [('video', 1), ('audio', len(audio)), ('subtitle', len(subs))]:
+            if sum(s['codec_type'] == kind for s in result['streams']) != count:
+                raise ValueError('Joined track count mismatch; upload was not started')
+        # Decode across the cut to catch damaged transitions without decoding the whole movie.
+        run(['-ss', str(max(0, duration-1)), '-i', str(joined), '-t', '3',
+             '-map', '0:v:0', '-map', '0:a?', '-xerror', '-f', 'null', '-'])
+        joined.replace(target)
+    return duration

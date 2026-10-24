@@ -291,7 +291,7 @@ def merge():
     if os.getenv('SAMPLE_ONLY','false').lower()=='true':
         shutil.copyfile('clixarena.mp4',preview/'sample.mp4')
         return
-    values = {name:os.getenv(name,'') for name in ('STREAMTAPE_LOGIN','STREAMTAPE_KEY','ABYSS_API_KEY','STREAMHG_API_KEY','OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_API_ID','TELEGRAM_API_HASH')}
+    values = {name:os.getenv(name,'') for name in ('STREAMTAPE_LOGIN','STREAMTAPE_KEY','ABYSS_API_KEY','STREAMHG_API_KEY','OK_PUBLIC_KEY','OK_SECRET_KEY','OK_ACCESS_TOKEN')}
     for value in values.values(): mask(value)
     complete_upload(Path('clixarena.mp4'),output_filename(os.getenv('OUTPUT_NAME','CLIXARENA.mp4')),values)
 

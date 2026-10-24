@@ -1,11 +1,15 @@
-# Runner selection fix - 2026.10.20
+# Video pipeline update
 
-Copy ALL .github/ and scripts/ contents into the existing repository and commit/push. The bundled .github/actions folder must be committed too. No portal redeploy or new secrets.
+Use this complete repository folder to replace the previous source files.
 
-Fix: the portal's overlay_layout.runnerMode selection now takes precedence over the GitHub workflow input's injected default single. Manual workflow runner_mode still works when the layout contains no runner selection. Invalid modes fail rather than silently encode on one runner. The pipeline logs the effective runner mode near startup.
+Removed files (delete these from an existing checkout before copying):
+- .github/workflows/clixarena-telegram.yml
+- scripts/clixarena_telegram_standalone.py
+- tests/test_telegram.py
+- tests/test_crypto_executor.py
 
-This bundle includes concurrent source artifact uploads, download progress and earlier upload-wait changes. Only new runs whose source_commit includes these files use the fix. Restarting an old pinned run retains its original code. No actual workflow was triggered.
+Copying over an existing folder alone does not delete old files. Stage deletions with git add -A before committing.
 
-Validation: five new mode-precedence/invalid-value/workflow regression tests passed; workflow YAML parsed. Earlier cumulative validation: 100 Python tests and 3 concurrent artifact tests passed before this isolated selection fix.
+The standalone title intro is now normalized to the final encoded main video's dimensions, frame rate, pixel format, track timescale and AAC sample rate/channel count. Only the short intro is encoded again; the main video is copied. Soft subtitles are offset by the actual intro duration. The joined file is checked for duration, track counts and decoding errors around the transition before it replaces the main output. Failure stops the run before upload. Both single and parallel workflows use this join function.
 
-Important: selecting parallel does not make the initial source download use multiple encoding runners. Download/prepare happen first, followed by up to four chunk workers. H.264 transfer mode can copy the video without encoding and does not need chunk workers.
+Validation: regression tests include different intro/main dimensions, frame rates, pixel formats and audio layouts, soft subtitle timing, silent main video, decoded frames before/after the transition, and preserving the main file on failure.

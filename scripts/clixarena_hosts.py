@@ -37,7 +37,6 @@ def merge_provider_mapping(rows,identity,file_id,provider='streamtape',quality_i
         if row.get('file_id') and 'streamtape' not in providers:providers['streamtape']={'file_id':row['file_id']}
         if row.get('abyss_id') and 'abyss' not in providers:providers['abyss']={'file_id':row['abyss_id']}
         if row.get('streamhg_id') and 'streamhg' not in providers:providers['streamhg']={'file_id':row['streamhg_id']}
-        if row.get('telegram_id') and 'telegram' not in providers:providers['telegram']={'file_id':row['telegram_id']}
         if row.get('okru_id') and 'okru' not in providers:providers['okru']={'file_id':row['okru_id']}
     entry={'file_id':file_id}
     providers[provider]=entry
@@ -45,7 +44,6 @@ def merge_provider_mapping(rows,identity,file_id,provider='streamtape',quality_i
     if 'streamtape' in providers:item['file_id']=providers['streamtape']['file_id']
     if 'abyss' in providers:item['abyss_id']=providers['abyss']['file_id']
     if 'streamhg' in providers:item['streamhg_id']=providers['streamhg']['file_id']
-    if 'telegram' in providers:item['telegram_id']=providers['telegram']['file_id']
     if 'okru' in providers:item['okru_id']=providers['okru']['file_id']
     return [row for row in rows if not matches(row)]+[item]
 

@@ -21,7 +21,7 @@ def streamtape_id(row):
     return row.get('file_id')
 
 
-HOSTS={'streamtape':'file_id','abyss':'abyss_id','streamhg':'streamhg_id','telegram':'telegram_id'}
+HOSTS={'streamtape':'file_id','abyss':'abyss_id','streamhg':'streamhg_id'}
 
 
 class SyncError(ValueError):
@@ -179,9 +179,6 @@ def collect_missing(rows,pause=time.sleep):
                     missing[host]=candidates & deleted
                     if candidates-deleted:
                         raise SyncError('StreamHG file-info missing results were not confirmed by account deleted-files history')
-            elif host=='telegram':
-                # Telegram files in private storage channels do not expire or get deleted due to inactivity.
-                print(host+' checked: '+str(len(ids[host]))+' file(s); confirmed missing: 0. No IDs or URLs logged.')
             else:
                 query,headers=abyss_auth()
                 status,body=read_json('https://api.abyss.to/v1/about'+query,headers=headers,stage='Abyss quota lookup')

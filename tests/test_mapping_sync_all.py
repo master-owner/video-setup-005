@@ -57,7 +57,7 @@ class SyncTests(unittest.TestCase):
              patch.object(sync,'read_json',side_effect=read) as abyss:
             missing,failed=sync.collect_missing(ROWS,pause=lambda _:None)
         self.assertEqual(failed,[])
-        self.assertEqual(missing,{'streamtape':{'tape1'},'abyss':{'abyss1'},'streamhg':{'hg1'},'telegram':set()})
+        self.assertEqual(missing,{'streamtape':{'tape1'},'abyss':{'abyss1'},'streamhg':{'hg1'}})
         self.assertEqual((tape.call_count,hg.call_count,abyss.call_count),(2,5,3))
 
     def test_auth_failure_preserves_host_while_other_hosts_sync(self):
