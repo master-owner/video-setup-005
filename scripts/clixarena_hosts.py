@@ -37,6 +37,7 @@ def merge_provider_mapping(rows,identity,file_id,provider='streamtape',quality_i
         if row.get('file_id') and 'streamtape' not in providers:providers['streamtape']={'file_id':row['file_id']}
         if row.get('abyss_id') and 'abyss' not in providers:providers['abyss']={'file_id':row['abyss_id']}
         if row.get('streamhg_id') and 'streamhg' not in providers:providers['streamhg']={'file_id':row['streamhg_id']}
+        if row.get('telegram_id') and 'telegram' not in providers:providers['telegram']={'file_id':row['telegram_id']}
         if row.get('okru_id') and 'okru' not in providers:providers['okru']={'file_id':row['okru_id']}
     entry={'file_id':file_id}
     providers[provider]=entry
@@ -44,6 +45,7 @@ def merge_provider_mapping(rows,identity,file_id,provider='streamtape',quality_i
     if 'streamtape' in providers:item['file_id']=providers['streamtape']['file_id']
     if 'abyss' in providers:item['abyss_id']=providers['abyss']['file_id']
     if 'streamhg' in providers:item['streamhg_id']=providers['streamhg']['file_id']
+    if 'telegram' in providers:item['telegram_id']=providers['telegram']['file_id']
     if 'okru' in providers:item['okru_id']=providers['okru']['file_id']
     return [row for row in rows if not matches(row)]+[item]
 
@@ -183,83 +185,31 @@ def verify_abyss(file_id,key,size,name,attempts=6,pause=time.sleep):
     return False,False
 
 
-def prepare_okru_evasion(path, run=subprocess.run):
-    """Ensure clean metadata, unique container salt, and fallback 5s intro if no standalone title animation intro was already prepended."""
-    import os
+def salt_mp4_container(path, run=subprocess.run):
+    """Add a unique random metadata salt to change file MD5/SHA256 hash without touching or breaking video/audio bitstreams."""
     from pathlib import Path
     src = Path(path)
     if not src.is_file():
         return path, None
-    evade_mode = os.getenv('OKRU_COPYRIGHT_EVASION', 'intro').strip().lower()
-    if evade_mode in ('0', 'false', 'off', 'none'):
-        return path, None
     salt = f"clixarena-{random.randint(100000000, 999999999)}-{int(time.time())}"
-    evaded = src.parent / f"okru_evaded_{random.randint(10000, 99999)}.mp4"
-    intro_file = src.parent / f"okru_intro_{random.randint(10000, 99999)}.mp4"
-    concat_list = src.parent / f"okru_concat_{random.randint(10000, 99999)}.txt"
-    intro_seconds = int(os.getenv('OKRU_INTRO_SECONDS', '5') or '5')
-    already_has_intro = Path('standalone-intro.mp4').is_file() or Path('parallel-media/standalone-intro.mp4').is_file()
-
+    salted = src.parent / f"okru_salted_{random.randint(10000, 99999)}.mp4"
+    cmd = [
+        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+        '-i', str(src),
+        '-map', '0',
+        '-map_metadata', '-1', '-map_chapters', '-1',
+        '-metadata', f'comment={salt}',
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        str(salted)
+    ]
     try:
-        if evade_mode in ('intro', 'hash') and not already_has_intro:
-            probe_cmd = ['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(src)]
-            probe_res = run(probe_cmd, capture_output=True, text=True, timeout=60)
-            v_stream, a_stream = {}, {}
-            if getattr(probe_res, 'returncode', 1) == 0 and getattr(probe_res, 'stdout', ''):
-                info = json.loads(probe_res.stdout)
-                streams = info.get('streams', [])
-                v_stream = next((s for s in streams if s.get('codec_type') == 'video'), {})
-                a_stream = next((s for s in streams if s.get('codec_type') == 'audio'), {})
-            w = int(v_stream.get('width') or 1280)
-            h = int(v_stream.get('height') or 720)
-            fps_raw = v_stream.get('r_frame_rate') or '24/1'
-            pix_fmt = v_stream.get('pix_fmt') or 'yuv420p'
-            sample_rate = int(a_stream.get('sample_rate') or 48000)
-            channels = int(a_stream.get('channels') or 2)
-            ch_layout = 'stereo' if channels == 2 else 'mono' if channels == 1 else '5.1'
-            gen_cmd = [
-                'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-                '-f', 'lavfi', '-i', f'color=c=black:s={w}x{h}:r={fps_raw}:d={intro_seconds}',
-                '-f', 'lavfi', '-i', f'anullsrc=channel_layout={ch_layout}:sample_rate={sample_rate}',
-                '-t', str(intro_seconds),
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', pix_fmt,
-                *(['-c:a', 'aac', '-b:a', '128k'] if a_stream else ['-an']),
-                '-video_track_timescale', str(v_stream.get('time_base', '1/90000')).split('/')[-1],
-                str(intro_file)
-            ]
-            gen_res = run(gen_cmd, capture_output=True, text=True, timeout=180)
-            if getattr(gen_res, 'returncode', 1) == 0 and intro_file.is_file() and intro_file.stat().st_size > 0:
-                concat_list.write_text(f"file '{intro_file.resolve()}'\nfile '{src.resolve()}'\n", encoding='utf-8')
-                concat_cmd = [
-                    'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-                    '-f', 'concat', '-safe', '0', '-i', str(concat_list),
-                    '-map_metadata', '-1', '-map_chapters', '-1',
-                    '-metadata', f'title={random.randint(1000000000, 9999999999)}',
-                    '-metadata', f'comment={salt}',
-                    '-c', 'copy', '-movflags', '+faststart', str(evaded)
-                ]
-                concat_res = run(concat_cmd, capture_output=True, text=True, timeout=600)
-                if getattr(concat_res, 'returncode', 1) == 0 and evaded.is_file() and evaded.stat().st_size > src.stat().st_size:
-                    return evaded, evaded
-
-        cmd = [
-            'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-            '-i', str(src),
-            '-map', '0:v:0', '-map', '0:a?', '-map', '0:s?',
-            '-map_metadata', '-1', '-map_chapters', '-1',
-            '-metadata', f'title={random.randint(1000000000, 9999999999)}',
-            '-metadata', f'comment={salt}',
-            '-c', 'copy', '-movflags', '+faststart', str(evaded)
-        ]
-        res = run(cmd, capture_output=True, text=True, timeout=600)
-        if getattr(res, 'returncode', 1) == 0 and evaded.is_file() and evaded.stat().st_size > 0:
-            return evaded, evaded
+        res = run(cmd, capture_output=True, text=True, timeout=300)
+        if getattr(res, 'returncode', 1) == 0 and salted.is_file() and salted.stat().st_size > 0:
+            return salted, salted
     except Exception:
         pass
-    finally:
-        intro_file.unlink(missing_ok=True)
-        concat_list.unlink(missing_ok=True)
-    evaded.unlink(missing_ok=True)
+    salted.unlink(missing_ok=True)
     return path, None
 
 
@@ -272,7 +222,7 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
     mask(secret_key)
     mask(access_token)
 
-    upload_path, temp_evaded = prepare_okru_evasion(path, run=run)
+    upload_path, temp_salted = salt_mp4_container(path, run=run)
     rand_num = str(random.randint(1000000000, 9999999999))
     rand_filename = f"{rand_num}.mp4"
     size = file_size(upload_path) or 0
@@ -342,9 +292,9 @@ def upload_okru(path, name, public_key, secret_key, access_token, mask=lambda _:
     try:
         response = run_upload(cmd, input='', runner=run, label='Ok.ru', size=size, capture_output=True, text=True, timeout=7210)
     finally:
-        if temp_evaded is not None:
+        if temp_salted is not None:
             try:
-                temp_evaded.unlink(missing_ok=True)
+                temp_salted.unlink(missing_ok=True)
             except Exception:
                 pass
     if response.returncode != 0:

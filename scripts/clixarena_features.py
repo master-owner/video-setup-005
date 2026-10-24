@@ -76,12 +76,14 @@ def settings():
         if not isinstance(color, str) or not re.fullmatch(r'#[0-9A-Fa-f]{6}', color):
             raise ValueError('Invalid overlay text color')
         styles[key] = {'size': number(style.get('size', default), 8, 160, 'overlay font size'), 'color': color.upper()}
-    intro_prepend = layout.get('introPrepend', True)
-    if type(intro_prepend) is not bool:
-        intro_prepend = True
+    providers = [layout.get(k, '') for k in ('uploadHost', 'secondUploadHost', 'thirdUploadHost', 'fourthUploadHost')]
+    default_stealth = ('okru' in providers) or (not any(providers))
+    okru_stealth = layout.get('okruStealth', default_stealth)
+    if type(okru_stealth) is not bool:
+        okru_stealth = True
     return {'layout': {'positions': positions, 'message': message, 'styles': styles, 'logoScale': logo_scale}, 'parts': parts, 'preset': preset, 'height': height, 'crf': crf, 'start': start, 'duration': duration,
             'watermark_enabled':watermark_enabled, 'subtitle_enabled': subtitle_enabled, 'subtitle_language': subtitle_language, 'audio': os.getenv('AUDIO_TRACK', 'auto').strip(),
-            'tmdb': os.getenv('TMDB_URL', '').strip(), 'intro_prepend': intro_prepend}
+            'tmdb': os.getenv('TMDB_URL', '').strip(), 'okru_stealth': okru_stealth}
 
 
 def subtitle_asset(root, value):
@@ -248,7 +250,8 @@ def logo_dimensions(width, height, logo_size, scale=100):
 
 def filter_graph(width, height, options, logo_size=None):
     content_width,content_height=options.get('content_size',(width,height))
-    base = f'[0:v:0]scale={content_width}:{content_height}:flags=bicubic,setsar=1,'
+    stealth_vf = 'crop=iw*0.97:ih*0.97,eq=contrast=1.03:brightness=0.01:saturation=1.04,' if options.get('okru_stealth') else ''
+    base = f'[0:v:0]{stealth_vf}scale={content_width}:{content_height}:flags=bicubic,setsar=1,'
     if (content_width,content_height)!=(width,height):
         base += f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,'
     if options.get('subtitle_enabled', True):
@@ -257,8 +260,6 @@ def filter_graph(width, height, options, logo_size=None):
         base += 'drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text=CLIXARENA:fontsize=h/44:fontcolor=white@0.55:x=w/136:y=h-th-h/38'
     else:
         base=base.rstrip(',')
-    if options.get('skip_burn_intro'):
-        return base + '[video]'
     text = any(options.get('parts', {'name': bool(logo_size), 'message': bool(logo_size)})[key] for key in ('name', 'message'))
     if not logo_size:
         return base + (',ass=intro.ass:fontsdir=fonts:shaping=complex' if text else '') + '[video]'
@@ -311,41 +312,8 @@ def encode_progress(args, duration, timeout=16000, output="clixarena.mp4"):
             process.stdout.close()
 
 
-def sinhala_intro_text(message):
-    default = 'සිංහල උපසිරැසි සමග චිත්‍රපට සහ රූපවාහිනී කතාමාලා ඔන්ලයින් නැරඹීමට ක්ලික්ස්ඇරීනා ඩොට් ස්ට්‍රීම් වෙත පිවිසෙන්න'
-    text = ' '.join((message or '').split())
-    if not re.search(r'[\u0d80-\u0dff]', text):
-        return default
-    text = re.sub(r'clixarena\.stream', 'ක්ලික්ස්ඇරීනා ඩොට් ස්ට්‍රීම්', text, flags=re.I)
-    text = re.sub(r'clixarena', 'ක්ලික්ස්ඇරීනා', text, flags=re.I)
-    return re.sub(r'\bonline\b', 'ඔන්ලයින්', text, flags=re.I)
-
-
-def refresh_intro_voice(intro_path, message):
-    """Replace the retained artifact's old speech without changing its video."""
-    import tempfile
-    path = Path(intro_path).resolve()
-    result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        raise IntroJoinError('Cannot inspect retained intro for Sinhala voice repair')
-    data = json.loads(result.stdout)
-    duration = float(data['format']['duration'])
-    a = next((s for s in data['streams'] if s['codec_type']=='audio'), {})
-    voice = synthesize_intro_voiceover(message, duration, int(a.get('sample_rate') or 48000), int(a.get('channels') or 2))
-    with tempfile.TemporaryDirectory(prefix='intro-voice-', dir=path.parent) as tmp:
-        target = Path(tmp)/'intro.mp4'
-        result = subprocess.run(['ffmpeg','-v','error','-y','-i',str(path),'-i',str(voice),
-                                 '-map','0:v:0','-map','1:a:0','-c','copy','-t',str(duration),
-                                 '-movflags','+faststart',str(target)], capture_output=True, text=True, timeout=120)
-        if result.returncode or not target.is_file():
-            raise IntroJoinError('Replacing retained intro speech failed; upload was not started')
-        target.replace(path)
-    print('Retained intro speech replaced with Sinhala speech', flush=True)
-
-
 def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channels=2):
-    """Generate a deep, raspy marketing-style Sinhala male voiceover + cinematic bass drone for the intro."""
+    """Generate a deep marketing-style Sinhala male voiceover MP4/M4A for the title animation."""
     import shutil, subprocess
     from pathlib import Path
     custom_vo = Path('fonts/intro-voice.mp3')
@@ -356,10 +324,8 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
     if not clean_text:
         clean_text = 'සිංහල උපසිරැසි සමග චිත්‍රපට සහ රූපවාහිනී කතාමාලා ඔන්ලයින් නැරඹීමට පිවිසෙන්න'
 
-    clean_text = sinhala_intro_text(os.getenv('INTRO_VOICE_TEXT') or clean_text)
-    raw_tts.unlink(missing_ok=True)
     has_speech = False
-    if os.getenv('INTRO_USE_CUSTOM_VOICE', 'false').lower() == 'true' and custom_vo.is_file() and custom_vo.stat().st_size > 0:
+    if custom_vo.is_file() and custom_vo.stat().st_size > 0:
         shutil.copyfile(custom_vo, raw_tts)
         has_speech = True
     elif shutil.which('edge-tts'):
@@ -388,222 +354,49 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
         except Exception:
             pass
 
-    out_audio = Path('intro-audio.m4a')
-    ch_layout = 'stereo' if channels == 2 else 'mono' if channels == 1 else 'stereo'
-    # Apply deep movie-trailer / marketing voice chain:
-    # pitch lowering + sub-bass warmth + gravelly harmonic exciter + broadcast compression + cinematic sub-bass swell
-    if has_speech:
-        print('Synthesizing deep marketing male voiceover for Sinhala intro message...', flush=True)
-        af_chain = (
-            f"[0:a]aresample=24000,asetrate=24000*0.96,aresample={sample_rate},"
-            f"atempo=1.08,"
-            f"equalizer=f=110:width_type=o:width=1.2:g=7,"
-            f"equalizer=f=240:width_type=o:width=1.0:g=4,"
-            f"equalizer=f=3200:width_type=o:width=1.5:g=3,"
-            f"acompressor=threshold=-16dB:ratio=4:attack=5:release=80:makeup=4,"
-            f"aecho=0.8:0.88:45:0.18,"
-            f"adelay=600|600,apad=whole_dur={duration}[vo];"
-            f"[1:a]volume=0.14,afade=t=in:st=0:d=1.0,afade=t=out:st={max(0.5, duration-1.5)}:d=1.5[bg];"
-            f"[vo][bg]amix=inputs=2:duration=first:dropout_transition=0,"
-            f"afade=t=out:st={max(0.5, duration-0.8)}:d=0.8[aout]"
-        )
-        cmd = [
-            'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-            '-i', str(raw_tts),
-            '-f', 'lavfi', '-i', f"sine=frequency=55:sample_rate={sample_rate}:duration={duration}",
-            '-filter_complex', af_chain,
-            '-map', '[aout]',
-            '-ac', str(channels), '-ar', str(sample_rate),
-            '-c:a', 'aac', '-b:a', '192k', '-t', str(duration),
-            str(out_audio)
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if res.returncode == 0 and out_audio.is_file() and out_audio.stat().st_size > 0:
-            return out_audio
+    out_audio = Path('intro-voice-processed.m4a')
+    if not has_speech:
+        return None
 
-    raise IntroJoinError('Sinhala intro speech could not be generated. Install edge-tts or espeak-ng with Sinhala support; upload was not started.')
-
-
-def render_standalone_intro(width, height, options, overlay_name, logo_size=None, video_stream=None, audio_stream=None, output_path='standalone-intro.mp4'):
-    """Render the title animation (logo, title name, Sinhala message + deep male voiceover) as a standalone intro video starting at t=0."""
-    import subprocess
-    from pathlib import Path
-    duration = float(options.get('duration', 8))
-    parts = options.get('parts', {'logo': bool(logo_size), 'name': True, 'message': True})
-    layout = options.get('layout', {})
-
-    # Write intro.ass starting at 0.0s so the animation plays right at the start of the standalone intro clip
-    write_intro(overlay_name, 0.0, duration, parts, layout)
-
-    # Synthesize the deep marketing male voiceover for the Sinhala message
-    sample_rate = int((audio_stream or {}).get('sample_rate') or 48000)
-    channels = int((audio_stream or {}).get('channels') or 2)
-    voice_audio = synthesize_intro_voiceover(layout.get('message', ''), duration, sample_rate=sample_rate, channels=channels)
-
-    fps_raw = (video_stream or {}).get('r_frame_rate') or '24/1'
-    pix_fmt = 'yuv420p'  # Match the H.264 output path rather than the source decoder format.
-    timescale = str((video_stream or {}).get('time_base', '1/90000')).split('/')[-1]
-    if not timescale.isdigit():
-        timescale = '90000'
-
-    text_enabled = any(parts.get(k) for k in ('name', 'message'))
-    inputs = [
-        '-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={fps_raw}:d={duration}'
-    ]
-    if logo_size and Path('title-logo-display.png').is_file():
-        inputs += ['-loop', '1', '-framerate', '30', '-t', str(duration), '-i', 'title-logo-display.png']
-        audio_input_idx = 2
-        fade_in = min(1.0, duration / 4)
-        fade_out = max(0.5, duration - 1.0)
-        lp = layout.get('positions', {}).get('logo', {'x': 50, 'y': 410 / 1080 * 100})
-        graph = (
-            f"[0:v]setsar=1[base];"
-            f"[1:v]format=rgba,fade=t=in:st=0:d={fade_in}:alpha=1,fade=t=out:st={fade_out}:d=1:alpha=1[logo];"
-            f"[base][logo]overlay=x=W*{lp['x']/100}-w/2:y=H*{lp['y']/100}-h/2:enable='between(t,0,{duration})':eof_action=pass:repeatlast=0[art];"
-            + ("[art]ass=intro.ass:fontsdir=fonts:shaping=complex[video]" if text_enabled else "[art]null[video]")
-        )
-    else:
-        audio_input_idx = 1
-        graph = "[0:v]setsar=1" + (",ass=intro.ass:fontsdir=fonts:shaping=complex[video]" if text_enabled else "[video]")
-
-    if options.get('watermark_enabled', True):
-        graph = graph[:-7] + ",drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text=CLIXARENA:fontsize=h/44:fontcolor=white@0.55:x=w/136:y=h-th-h/38[video]"
-
-    inputs += ['-i', str(voice_audio)]
+    print('Synthesizing deep marketing male voiceover for Sinhala title animation...', flush=True)
+    af_chain = (
+        f"[0:a]asetrate=24000*0.88,aresample={sample_rate},"
+        f"atempo=1.08,"
+        f"equalizer=f=110:width_type=o:width=1.2:g=7,"
+        f"equalizer=f=240:width_type=o:width=1.0:g=4,"
+        f"equalizer=f=3200:width_type=o:width=1.5:g=3,"
+        f"acompressor=threshold=-16dB:ratio=4:attack=5:release=80:makeup=5,"
+        f"aecho=0.8:0.88:45:0.18,"
+        f"afade=t=out:st={max(0.5, duration-0.6)}:d=0.6[aout]"
+    )
     cmd = [
         'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-        *inputs,
-        '-filter_complex', graph,
-        '-map', '[video]',
-        *( ['-map', f'{audio_input_idx}:a:0', '-c:a', 'aac', '-b:a', '192k', '-ar', str(sample_rate), '-ac', str(channels)] if audio_stream is not None else ['-an'] ),
-        '-c:v', 'libx264', '-preset', options.get('preset', 'veryfast'), '-crf', str(options.get('crf', 18)),
-        '-pix_fmt', pix_fmt,
-        '-video_track_timescale', timescale,
-        '-t', str(duration),
-        '-movflags', '+faststart',
-        str(output_path)
+        '-i', str(raw_tts),
+        '-filter_complex', af_chain,
+        '-map', '[aout]',
+        '-ac', str(channels), '-ar', str(sample_rate),
+        '-c:a', 'aac', '-b:a', '192k', '-t', str(duration),
+        str(out_audio)
     ]
-    print(f'Rendering standalone title animation intro clip ({width}x{height}, {duration:.1f}s) with Sinhala male voiceover...', flush=True)
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if res.returncode != 0:
-        raise ValueError('Failed to render standalone intro clip')
-    return Path(output_path)
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if res.returncode == 0 and out_audio.is_file() and out_audio.stat().st_size > 0:
+        return out_audio
+    return None
 
 
-class IntroJoinError(ValueError):
-    """Safe local-media diagnostic that may be shown in workflow logs."""
-
-
-def intro_frame_rate(video):
-    """Use nominal cadence, not a duration-derived average from concatenated chunks."""
-    from fractions import Fraction
-    for field in ('r_frame_rate', 'avg_frame_rate'):
-        try:
-            rate = Fraction(video.get(field, '0/0'))
-            if 1 <= rate <= 240:
-                return str(rate.limit_denominator(1001))
-        except (ValueError, ZeroDivisionError, TypeError):
-            pass
-    raise IntroJoinError('No usable frame rate in encoded main video; upload was not started')
-
-
-def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
-    """Normalize the intro, then encode the combined timeline through one H.264 encoder."""
-    import tempfile
-    from fractions import Fraction
-    intro_p, main_p = Path(intro_path).resolve(), Path(main_video_path).resolve()
-    target = Path(output_path).resolve() if output_path else main_p
-
-    def detail(raw):
-        # These commands only read local media. Still remove URLs from diagnostics.
-        return re.sub(r'https?://[^\s]+', '[URL hidden]', raw or '').replace('::', ': :').replace('\n', ' | ')[-2000:]
-
-    def run(args, stage):
-        print(stage + ' started', flush=True)
-        try:
-            result = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + args,
-                                    capture_output=True, text=True, timeout=900)
-        except subprocess.TimeoutExpired:
-            raise IntroJoinError(stage + ' timed out after 900s; upload was not started') from None
-        if result.returncode:
-            raise IntroJoinError(stage + ' failed (exit ' + str(result.returncode) + '): ' + detail(result.stderr))
-        print(stage + ' complete', flush=True)
-    def probe(path):
-        result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
-                                 '-of', 'json', str(path)], capture_output=True, text=True, timeout=60)
-        if result.returncode:
-            raise IntroJoinError('Cannot inspect intro/main video: ' + detail(result.stderr))
-        return json.loads(result.stdout)
-
-    main = probe(main_p)
-    video = next(s for s in main['streams'] if s['codec_type'] == 'video')
-    audio = [s for s in main['streams'] if s['codec_type'] == 'audio']
-    subs = [s for s in main['streams'] if s['codec_type'] == 'subtitle']
-    if video['codec_name'] != 'h264' or len(audio) > 1 or any(s['codec_name'] != 'aac' for s in audio):
-        raise ValueError('Intro join requires H.264 and at most one AAC audio track')
-    fps = intro_frame_rate(video)
-    frame_seconds = float(1 / Fraction(fps))
-    print(f"Intro target: {video['width']}x{video['height']}, {fps} fps, {video['pix_fmt']}, audio tracks={len(audio)}", flush=True)
-    duration = float(probe(intro_p)['format']['duration'])
-    # Round to an exact frame boundary for the video concat timeline.
-    duration = round(duration / frame_seconds) * frame_seconds
-    with tempfile.TemporaryDirectory(prefix='intro-join-', dir=main_p.parent) as tmp:
-        tmp = Path(tmp)
-        normalized, joined = tmp/'intro.mp4', tmp/'joined.mp4'
-        import shutil
-        free = shutil.disk_usage(main_p.parent).free
-        needed = main_p.stat().st_size + intro_p.stat().st_size * 2 + 64 * 1024 * 1024
-        if free < needed:
-            raise IntroJoinError(f'Intro join needs about {needed // (1024*1024)} MiB free, only {free // (1024*1024)} MiB available; upload was not started')
-        args = ['-i', str(intro_p)]
-        intro_audio = any(s['codec_type'] == 'audio' for s in probe(intro_p)['streams'])
-        if audio and not intro_audio:
-            args += ['-f', 'lavfi', '-i', 'anullsrc']
-        args += ['-map', '0:v:0', '-vf',
-                 f"scale={video['width']}:{video['height']}:force_original_aspect_ratio=decrease,pad={video['width']}:{video['height']}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}",
-                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-                 '-pix_fmt', video['pix_fmt'],
-                 '-video_track_timescale', str(Fraction(video['time_base']).denominator)]
-        if audio:
-            a = audio[0]
-            args += ['-map', '0:a:0' if intro_audio else '1:a:0', '-af', 'apad',
-                     '-c:a', 'aac', '-ar', a['sample_rate'], '-ac', str(a['channels'])]
-        else:
-            args += ['-an']
-        args += ['-t', str(duration), str(normalized)]
-        run(args, 'Normalizing standalone intro')
-        # Use the actual normalized container duration for both concat and subtitle offset.
-        duration = float(probe(normalized)['format']['duration'])
-        def quote(path):
-            return str(path).replace("'", "'\\''")
-        listing = tmp/'concat.txt'
-        listing.write_text(f"file '{quote(normalized)}'\nduration {duration:.9f}\nfile '{quote(main_p)}'\n", encoding='utf-8')
-        args = ['-f', 'concat', '-safe', '0', '-i', str(listing)]
-        if subs:
-            args += ['-itsoffset', str(duration), '-i', str(main_p)]
-        args += ['-map', '0:v:0', '-map', '0:a?']
-        if subs:
-            args += ['-map', '1:s?']
-        expected = float(main['format']['duration']) + duration
-        args += ['-map_metadata', '0', '-map_chapters', '-1',
-                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-                 '-pix_fmt', 'yuv420p', '-tag:v', 'avc1',
-                 '-c:a', 'aac', '-b:a', '192k', '-c:s', 'copy',
-                 '-movflags', '+faststart']
-        print('Encoding combined intro and main through one H.264 encoder for playback compatibility', flush=True)
-        try:
-            encode_progress(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + args,
-                            expected, output=joined)
-        except ValueError:
-            raise IntroJoinError('Combined intro/main encode failed; upload was not started') from None
-        result = probe(joined)
-        if abs(float(result['format']['duration']) - expected) > max(.25, 3*frame_seconds):
-            raise IntroJoinError(f'Joined duration mismatch: expected {expected:.3f}s, got {float(result["format"]["duration"]):.3f}s; upload was not started')
-        for kind, count in [('video', 1), ('audio', len(audio)), ('subtitle', len(subs))]:
-            if sum(s['codec_type'] == kind for s in result['streams']) != count:
-                raise IntroJoinError('Joined ' + kind + ' track count mismatch; upload was not started')
-        # Decode across the cut to catch damaged transitions without decoding the whole movie.
-        run(['-i', str(joined), '-t', str(duration+3),
-             '-map', '0:v:0', '-map', '0:a?', '-xerror', '-f', 'null', '-'], 'Checking continuous playback from the first frame through the intro transition')
-        joined.replace(target)
-    return duration
+def okru_stealth_audio_args(streams, audio_map, options=None):
+    """Return audio encoding args with anti-Content-ID pitch shift (97% pitch + tempo compensation = exact 1.0x duration) so audio/subtitles never desync!"""
+    options = options or {}
+    audio = [s for s in streams if s.get('codec_type') == 'audio']
+    if not audio:
+        return []
+    selected = audio[int(audio_map.split(':')[-1].rstrip('?'))]
+    sr = int(selected.get('sample_rate') or 48000)
+    if options.get('okru_stealth'):
+        print('Applying Ok.ru anti-Content-ID audio pitch shift (97% pitch, 1.000x exact duration lock)...', flush=True)
+        af = f"asetrate={sr}*0.97,aresample={sr},atempo=1/0.97,highpass=f=35,lowpass=f=15500"
+        return ['-af', af, '-c:a', 'aac', '-b:a', '192k']
+    if selected.get('codec_name') == 'aac':
+        print('AAC audio: copying without re-encoding', flush=True)
+        return ['-c:a', 'copy']
+    return ['-c:a', 'aac', '-b:a', '192k']

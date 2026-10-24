@@ -147,7 +147,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Install media tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent espeak-ng
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fontconfig fonts-dejavu-core fonts-noto-core python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
       - name: Download, validate, encode and upload
         id: video
         env:
@@ -183,6 +183,11 @@ jobs:
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
+          TELEGRAM_BOT_TOKENS: ${{ secrets.TELEGRAM_BOT_TOKENS || secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: python3 -u scripts/clixarena_video.py
       - name: Stage source chunks concurrently
         if: ${{ steps.video.outputs.distributed == 'true' }}
@@ -215,8 +220,8 @@ jobs:
             parallel-media/ready.txt
             parallel-media/companion-source.mkv
             parallel-media/audio-source.mka
+            parallel-media/intro-voice-processed.m4a
             parallel-media/subtitle.srt
-            parallel-media/standalone-intro.mp4
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -328,7 +333,6 @@ jobs:
             parallel-media/companion.mkv
             parallel-media/audio.m4a
             parallel-media/subtitle.srt
-            parallel-media/standalone-intro.mp4
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -344,7 +348,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Install media and mapping tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-cryptography python3-libtorrent espeak-ng
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-cryptography python3-libtorrent && (pip install --no-cache-dir --break-system-packages pyrogram tgcrypto || true)
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: parallel-encoded-*
@@ -374,6 +378,11 @@ jobs:
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
+          TELEGRAM_BOT_TOKENS: ${{ secrets.TELEGRAM_BOT_TOKENS || secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: python3 -u scripts/clixarena_distributed.py merge
       - name: Mapping receipt
         if: ${{ always() && !inputs.sample_only }}
