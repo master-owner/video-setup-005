@@ -311,6 +311,39 @@ def encode_progress(args, duration, timeout=16000, output="clixarena.mp4"):
             process.stdout.close()
 
 
+def sinhala_intro_text(message):
+    default = 'සිංහල උපසිරැසි සමග චිත්‍රපට සහ රූපවාහිනී කතාමාලා ඔන්ලයින් නැරඹීමට ක්ලික්ස්ඇරීනා ඩොට් ස්ට්‍රීම් වෙත පිවිසෙන්න'
+    text = ' '.join((message or '').split())
+    if not re.search(r'[\u0d80-\u0dff]', text):
+        return default
+    text = re.sub(r'clixarena\.stream', 'ක්ලික්ස්ඇරීනා ඩොට් ස්ට්‍රීම්', text, flags=re.I)
+    text = re.sub(r'clixarena', 'ක්ලික්ස්ඇරීනා', text, flags=re.I)
+    return re.sub(r'\bonline\b', 'ඔන්ලයින්', text, flags=re.I)
+
+
+def refresh_intro_voice(intro_path, message):
+    """Replace the retained artifact's old speech without changing its video."""
+    import tempfile
+    path = Path(intro_path).resolve()
+    result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)],
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise IntroJoinError('Cannot inspect retained intro for Sinhala voice repair')
+    data = json.loads(result.stdout)
+    duration = float(data['format']['duration'])
+    a = next((s for s in data['streams'] if s['codec_type']=='audio'), {})
+    voice = synthesize_intro_voiceover(message, duration, int(a.get('sample_rate') or 48000), int(a.get('channels') or 2))
+    with tempfile.TemporaryDirectory(prefix='intro-voice-', dir=path.parent) as tmp:
+        target = Path(tmp)/'intro.mp4'
+        result = subprocess.run(['ffmpeg','-v','error','-y','-i',str(path),'-i',str(voice),
+                                 '-map','0:v:0','-map','1:a:0','-c','copy','-t',str(duration),
+                                 '-movflags','+faststart',str(target)], capture_output=True, text=True, timeout=120)
+        if result.returncode or not target.is_file():
+            raise IntroJoinError('Replacing retained intro speech failed; upload was not started')
+        target.replace(path)
+    print('Retained intro speech replaced with Sinhala speech', flush=True)
+
+
 def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channels=2):
     """Generate a deep, raspy marketing-style Sinhala male voiceover + cinematic bass drone for the intro."""
     import shutil, subprocess
@@ -323,8 +356,10 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
     if not clean_text:
         clean_text = 'සිංහල උපසිරැසි සමග චිත්‍රපට සහ රූපවාහිනී කතාමාලා ඔන්ලයින් නැරඹීමට පිවිසෙන්න'
 
+    clean_text = sinhala_intro_text(os.getenv('INTRO_VOICE_TEXT') or clean_text)
+    raw_tts.unlink(missing_ok=True)
     has_speech = False
-    if custom_vo.is_file() and custom_vo.stat().st_size > 0:
+    if os.getenv('INTRO_USE_CUSTOM_VOICE', 'false').lower() == 'true' and custom_vo.is_file() and custom_vo.stat().st_size > 0:
         shutil.copyfile(custom_vo, raw_tts)
         has_speech = True
     elif shutil.which('edge-tts'):
@@ -360,7 +395,7 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
     if has_speech:
         print('Synthesizing deep marketing male voiceover for Sinhala intro message...', flush=True)
         af_chain = (
-            f"[0:a]asetrate=24000*0.88,aresample={sample_rate},"
+            f"[0:a]aresample=24000,asetrate=24000*0.96,aresample={sample_rate},"
             f"atempo=1.08,"
             f"equalizer=f=110:width_type=o:width=1.2:g=7,"
             f"equalizer=f=240:width_type=o:width=1.0:g=4,"
@@ -386,17 +421,7 @@ def synthesize_intro_voiceover(message_text, duration, sample_rate=48000, channe
         if res.returncode == 0 and out_audio.is_file() and out_audio.stat().st_size > 0:
             return out_audio
 
-    # Fallback cinematic intro audio if TTS is offline
-    cmd = [
-        'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-        '-f', 'lavfi', '-i', f"sine=frequency=58:sample_rate={sample_rate}:duration={duration}",
-        '-af', f"volume=0.15,afade=t=in:st=0:d=0.8,afade=t=out:st={max(0.5, duration-1.2)}:d=1.2",
-        '-ac', str(channels), '-ar', str(sample_rate),
-        '-c:a', 'aac', '-b:a', '192k', '-t', str(duration),
-        str(out_audio)
-    ]
-    subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    return out_audio
+    raise IntroJoinError('Sinhala intro speech could not be generated. Install edge-tts or espeak-ng with Sinhala support; upload was not started.')
 
 
 def render_standalone_intro(width, height, options, overlay_name, logo_size=None, video_stream=None, audio_stream=None, output_path='standalone-intro.mp4'):
@@ -483,7 +508,7 @@ def intro_frame_rate(video):
 
 
 def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
-    """Normalize only the short intro to the encoded main, then validate the join."""
+    """Normalize the intro, then encode the combined timeline through one H.264 encoder."""
     import tempfile
     from fractions import Fraction
     intro_p, main_p = Path(intro_path).resolve(), Path(main_video_path).resolve()
@@ -559,18 +584,26 @@ def prepend_standalone_intro(intro_path, main_video_path, output_path=None):
         args += ['-map', '0:v:0', '-map', '0:a?']
         if subs:
             args += ['-map', '1:s?']
-        args += ['-map_metadata', '0', '-map_chapters', '-1', '-c', 'copy',
-                 '-movflags', '+faststart', str(joined)]
-        run(args, 'Joining intro and main MP4')
-        result = probe(joined)
         expected = float(main['format']['duration']) + duration
+        args += ['-map_metadata', '0', '-map_chapters', '-1',
+                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+                 '-pix_fmt', 'yuv420p', '-tag:v', 'avc1',
+                 '-c:a', 'aac', '-b:a', '192k', '-c:s', 'copy',
+                 '-movflags', '+faststart']
+        print('Encoding combined intro and main through one H.264 encoder for playback compatibility', flush=True)
+        try:
+            encode_progress(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + args,
+                            expected, output=joined)
+        except ValueError:
+            raise IntroJoinError('Combined intro/main encode failed; upload was not started') from None
+        result = probe(joined)
         if abs(float(result['format']['duration']) - expected) > max(.25, 3*frame_seconds):
             raise IntroJoinError(f'Joined duration mismatch: expected {expected:.3f}s, got {float(result["format"]["duration"]):.3f}s; upload was not started')
         for kind, count in [('video', 1), ('audio', len(audio)), ('subtitle', len(subs))]:
             if sum(s['codec_type'] == kind for s in result['streams']) != count:
                 raise IntroJoinError('Joined ' + kind + ' track count mismatch; upload was not started')
         # Decode across the cut to catch damaged transitions without decoding the whole movie.
-        run(['-ss', str(max(0, duration-1)), '-i', str(joined), '-t', '3',
-             '-map', '0:v:0', '-map', '0:a?', '-xerror', '-f', 'null', '-'], 'Checking intro transition')
+        run(['-i', str(joined), '-t', str(duration+3),
+             '-map', '0:v:0', '-map', '0:a?', '-xerror', '-f', 'null', '-'], 'Checking continuous playback from the first frame through the intro transition')
         joined.replace(target)
     return duration

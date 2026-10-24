@@ -289,7 +289,10 @@ def merge():
         # Reclaim its full movie-sized allocation before writing the intro join.
         (ROOT/'joined.mp4').unlink(missing_ok=True)
         print('Prepending standalone intro to validated MP4', flush=True)
-        from clixarena_features import prepend_standalone_intro
+        from clixarena_features import prepend_standalone_intro, refresh_intro_voice
+        if os.getenv('REGENERATE_INTRO_VOICE', 'false') == 'true':
+            layout = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
+            refresh_intro_voice(intro_candidate, layout.get('message', ''))
         added_dur = prepend_standalone_intro(intro_candidate, Path('clixarena.mp4'))
         print(f'Standalone intro video ({added_dur:.1f}s) prepended before merged MP4', flush=True)
     if os.getenv('SAMPLE_ONLY','false').lower()=='true':

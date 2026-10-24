@@ -76,6 +76,7 @@ class RecoveryTests(unittest.TestCase):
                 with patch.object(recovery.subprocess,'call',return_value=0) as call:
                     self.assertEqual(recovery.merge(),0)
                 self.assertEqual(call.call_args.args[0][-1],'merge')
+                self.assertEqual(call.call_args.kwargs['env']['REGENERATE_INTRO_VOICE'],'true')
                 self.assertEqual(call.call_args.kwargs['env']['OVERLAY_LAYOUT'],'{"uploadHost":"abyss"}')
             finally:
                 os.chdir(previous)

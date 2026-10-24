@@ -89,6 +89,7 @@ def merge():
     if data.get('render', {}).get('skip_burn_intro') and not (ROOT/'standalone-intro.mp4').is_file():
         raise ValueError('Standalone intro artifact is missing; recovery stopped before upload.')
     env = dict(os.environ)
+    env['REGENERATE_INTRO_VOICE'] = 'true'
     env.update({k: v for k, v in context.items() if k != 'SOURCE_RUN_ID'})
     print('Recovering merge, intro and upload only; using current checkout code.', flush=True)
     return subprocess.call([sys.executable, '-u', str(Path(__file__).with_name('clixarena_distributed.py')), 'merge'], env=env)

@@ -49,6 +49,12 @@ class IntroJoinTests(unittest.TestCase):
                 pixel=subprocess.check_output(['ffmpeg','-v','error','-ss',str(t),'-i',str(main),'-frames:v','1','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','-'])
                 self.assertGreater(pixel[channel], 180)
             self.ff('-xerror','-i',main,'-f','null','-')
+            # A browser must not need a different H.264 SPS after the intro.
+            import re
+            raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(main),'-map','0:v:0','-c','copy','-bsf:v','h264_mp4toannexb','-f','h264','-'])
+            nals=re.split(b'\x00\x00(?:\x00)?\x01',raw)
+            sps={nal for nal in nals if nal and nal[0] & 31 == 7}
+            self.assertEqual(len(sps),1)
 
     def test_nominal_rate_wins_over_chunk_average(self):
         from clixarena_features import intro_frame_rate
