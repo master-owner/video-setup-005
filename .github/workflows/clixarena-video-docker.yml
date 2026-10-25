@@ -1,4 +1,4 @@
-name: CLIXARENA video encode and upload
+name: CLIXARENA video encode and upload (Docker)
 run-name: CLIXARENA Â· ${{ inputs.output_name }} Â· ${{ inputs.job_id || inputs.subtitle_path }}
 on:
   workflow_dispatch:
