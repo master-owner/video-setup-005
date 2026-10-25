@@ -183,6 +183,8 @@ jobs:
       - name: Encode video
         id: video
         env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
           VIDEO_URL: ${{ inputs.video_url }}
           OVERLAY_LAYOUT: ${{ inputs.overlay_layout }}
           OVERLAY_NAME: ${{ inputs.overlay_name }}
@@ -212,9 +214,13 @@ jobs:
           sys.path.insert(0, os.path.abspath("scripts"))
           layout = json.loads(os.getenv("OVERLAY_LAYOUT", "") or "{}")
           layout["sample_only"] = True
+          layout["runnerMode"] = "single"
           os.environ["OVERLAY_LAYOUT"] = json.dumps(layout)
+          os.environ["RUNNER_MODE"] = "single"
           import clixarena_video
-          clixarena_video.main()
+          rc = clixarena_video.main()
+          if rc != 0:
+              sys.exit(rc)
           '
 
       - name: Upload 4GB Single File to Private Telegram Channel
