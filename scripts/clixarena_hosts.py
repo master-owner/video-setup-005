@@ -74,7 +74,10 @@ def upload_abyss(path, name, key, mask=lambda _: None, run=subprocess.run):
             response = run_upload(
                 ['curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
                  '--connect-timeout', '30', '--keepalive-time', '5', '--max-time', '3600',
-                 '--speed-limit', '1024', '--speed-time', '30',
+                 '--speed-limit', '1024', '--speed-time', '60',
+                 '--buffer-size', '1048576',
+                 '--tcp-nodelay',
+                 '--http2',
                  '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                  '--form', form],
                 input='url = "' + escaped + '"\n',
