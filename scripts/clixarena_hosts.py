@@ -67,7 +67,11 @@ def upload_abyss(path, name, key, mask=lambda _: None, run=subprocess.run):
     filename = name.replace('\\', '\\\\').replace('"', '\\"')
     form = 'file=@' + str(path) + ';filename="' + filename + '"'
     response = run_upload(
-        ['curl', '--config', '-', '--silent', '--fail', '--proto', '=https', '--connect-timeout', '30', '--max-time', '3600', '--form', form],
+        ['curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
+         '--connect-timeout', '30', '--keepalive-time', '5', '--max-time', '3600',
+         '--speed-limit', '1024', '--speed-time', '30',
+         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+         '--form', form],
         input='url = "' + escaped + '"\n',
         capture_output=True,
         text=True,
