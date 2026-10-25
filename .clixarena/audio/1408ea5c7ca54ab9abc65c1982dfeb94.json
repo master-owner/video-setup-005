@@ -1,1 +1,1 @@
-{"job": "1408ea5c7ca54ab9abc65c1982dfeb94", "run_id": "40193189544", "status": "waiting_audio", "tracks": [{"index": 0, "language": "hin", "channels": 6, "codec": "eac3"}, {"index": 1, "language": "tam", "channels": 6, "codec": "eac3"}], "expires_at": 1792931921}
+{"job":"1408ea5c7ca54ab9abc65c1982dfeb94","run_id":"40193189544","status":"selected","tracks":[{"index":0,"language":"hin","channels":6,"codec":"eac3"},{"index":1,"language":"tam","channels":6,"codec":"eac3"}],"expires_at":1792931921,"selected":1}
