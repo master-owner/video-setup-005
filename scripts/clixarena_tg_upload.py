@@ -233,11 +233,16 @@ def main():
         print("::error::TG_BOT_TOKEN or TG_CHANNEL_ID is not configured in repository secrets.", flush=True)
         sys.exit(1)
 
-    search_paths = [
-        Path("preview") / "sample.mp4",
+    sample_only = get_env_var("SAMPLE_ONLY", "false").lower() == "true"
+    
+    search_paths = []
+    if sample_only:
+        search_paths += [Path("preview") / "sample.mp4"]
+    search_paths += [
         Path("clixarena.mp4"),
         Path(output_name),
-        Path("output.mp4")
+        Path("output.mp4"),
+        Path("preview") / "sample.mp4"
     ]
     
     video_path = None
@@ -247,7 +252,7 @@ def main():
             break
 
     if not video_path:
-        mp4s = list(Path("preview").glob("*.mp4")) + list(Path(".").glob("*.mp4"))
+        mp4s = list(Path(".").glob("*.mp4")) + list(Path("preview").glob("*.mp4"))
         if mp4s:
             video_path = mp4s[0]
 
