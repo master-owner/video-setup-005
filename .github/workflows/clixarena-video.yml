@@ -124,10 +124,6 @@ on:
         description: Portal tracking ID (set automatically by the Vercel page)
         required: false
         type: string
-      recover_run_id:
-        description: Optional failed Run ID to recover & upload directly without re-encoding
-        required: false
-        type: string
 permissions:
   contents: write
   pull-requests: none
@@ -140,7 +136,6 @@ concurrency:
 jobs:
   encode:
     name: Download, audio selection and preparation
-    if: ${{ !inputs.recover_run_id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     outputs:
@@ -369,7 +364,7 @@ jobs:
   finalize:
     name: Join, validate and upload MP4
     needs: [encode, chunks, companion]
-    if: ${{ always() && (inputs.recover_run_id != '' || (success() && needs.encode.outputs.distributed == 'true')) }}
+    if: ${{ success() && needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
@@ -383,7 +378,6 @@ jobs:
         with:
           name: parallel-ffmpeg
           path: /usr/local/bin
-          run-id: ${{ inputs.recover_run_id || github.run_id }}
       - name: Setup FFmpeg
         run: |
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
@@ -395,17 +389,14 @@ jobs:
           pattern: parallel-encoded-*
           merge-multiple: true
           path: parallel-media
-          run-id: ${{ inputs.recover_run_id || github.run_id }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: parallel-companion
           path: parallel-media
-          run-id: ${{ inputs.recover_run_id || github.run_id }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: parallel-manifest
           path: parallel-media
-          run-id: ${{ inputs.recover_run_id || github.run_id }}
       - name: Final validation and selected host upload
         env:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}

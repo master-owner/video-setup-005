@@ -1,0 +1,80 @@
+name: CLIXARENA recover and upload
+run-name: Recover and upload Â· ${{ inputs.run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Failed Workflow Run ID to recover (from URL or actions page)
+        required: true
+        type: string
+      output_name:
+        description: Video filename (with or without .mp4)
+        required: true
+        default: CLIXARENA.mp4
+        type: string
+      overlay_layout:
+        description: Preview layout JSON (contains mapping details; leave blank if none)
+        type: string
+        required: false
+permissions:
+  contents: write
+  pull-requests: none
+  issues: none
+  packages: none
+  id-token: none
+concurrency:
+  group: clixarena-recover-${{ inputs.run_id }}
+  cancel-in-progress: false
+jobs:
+  recover-and-upload:
+    name: Download artifacts, merge and upload MP4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Setup FFmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            curl -sL --connect-timeout 15 --max-time 120 https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || true
+          fi
+          sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
+      - name: Download encoded video chunks from failed run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: parallel-encoded-*
+          merge-multiple: true
+          path: parallel-media
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Download companion audio and subtitles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-companion
+          path: parallel-media
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Download parallel manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: parallel-manifest
+          path: parallel-media
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Final join and upload to Abyss
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAPPING_GITHUB_TOKEN: ${{ github.token }}
+          OVERLAY_LAYOUT: ${{ inputs.overlay_layout }}
+          OUTPUT_NAME: ${{ inputs.output_name }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+        run: python3 -u scripts/clixarena_distributed.py merge
+      - name: Mapping receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CLIXARENA-mapping
+          path: mapping-result.json
+          if-no-files-found: ignore
+          retention-days: 7
