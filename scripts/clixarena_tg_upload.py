@@ -17,6 +17,11 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
+# Ensure scripts directory is in sys.path
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from clixarena_video import (
     decrypt_mappings,
     encrypt_mappings,
@@ -229,10 +234,10 @@ def main():
         sys.exit(1)
 
     search_paths = [
+        Path("preview") / "sample.mp4",
         Path("clixarena.mp4"),
         Path(output_name),
-        Path("output.mp4"),
-        Path("preview") / "sample.mp4"
+        Path("output.mp4")
     ]
     
     video_path = None
@@ -242,7 +247,7 @@ def main():
             break
 
     if not video_path:
-        mp4s = list(Path(".").glob("*.mp4"))
+        mp4s = list(Path("preview").glob("*.mp4")) + list(Path(".").glob("*.mp4"))
         if mp4s:
             video_path = mp4s[0]
 

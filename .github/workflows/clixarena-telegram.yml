@@ -197,15 +197,21 @@ jobs:
           AUDIO_TRACK: ${{ inputs.audio_track }}
           RUNNER_MODE: single
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
-          # Skip default upload in clixarena_video by overriding upload host in layout
+          TITLE_ANIMATION: ${{ inputs.title_animation }}
+          SHOW_LOGO: ${{ inputs.show_logo }}
+          SHOW_NAME: ${{ inputs.show_name }}
+          SHOW_MESSAGE: ${{ inputs.show_message }}
+          OVERLAY_START: ${{ inputs.overlay_start }}
+          OVERLAY_DURATION: ${{ inputs.overlay_duration }}
+          TMDB_URL: ${{ inputs.tmdb_url }}
           ABYSS_API_KEY: "dummy-key-for-local-step"
         run: |
           # Run encode step only (skip Abyss upload)
           python3 -u -c '
-          import os, json
-          # Ensure layout disables default abyss upload
+          import os, sys, json
+          sys.path.insert(0, os.path.abspath("scripts"))
           layout = json.loads(os.getenv("OVERLAY_LAYOUT", "") or "{}")
-          layout["sample_only"] = True  # Tells video pipeline to produce output file without host upload
+          layout["sample_only"] = True
           os.environ["OVERLAY_LAYOUT"] = json.dumps(layout)
           import clixarena_video
           clixarena_video.main()
