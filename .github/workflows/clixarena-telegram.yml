@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: Direct HTTPS video URL
+        description: Direct HTTPS video URL (inputs are visible to repository users)
         required: true
         type: string
       output_name:
@@ -20,6 +20,14 @@ on:
         description: Separate title shown in video (blank uses filename)
         type: string
         required: false
+      runner_mode:
+        description: Single runner (direct, fast, no chunk transfer) or Parallel (4 runners)
+        required: false
+        default: single
+        type: choice
+        options:
+          - single
+          - parallel
       subtitle_method:
         description: Burn, selected-language on/off subtitles, or MP4 upload without added subtitles
         required: true
@@ -29,34 +37,92 @@ on:
           - burn
           - soft
           - transfer
+      sample_only:
+        description: Encode first 3 minutes for preview (no host upload)
+        required: true
+        default: false
+        type: boolean
       subtitle_path:
         description: auto picks the only SRT uploaded to subtitles/ (any filename), or enter its path
         default: auto
         required: true
         type: string
       font_path:
-        description: Relative path in repo for the single true-type burn font
-        default: auto
-        required: true
-        type: string
-      crf:
-        description: Video quality CRF (18 visually lossless, 22 balanced default, 26 compact)
-        default: "22"
+        description: Font TTF/OTF path in fonts/ or system:noto-sinhala / system:dejavu-sans / system:dejavu-serif
+        default: fonts/IskoolaPota.ttf
         required: true
         type: string
       quality:
-        description: Maximum video height (e.g. 1080)
-        default: "1080"
+        description: Burn/on-off standard frame size and quality; Original preserves source dimensions
         required: true
-        type: string
-      job_id:
-        description: Correlation token for portal job tracking
-        required: false
+        default: 720p - Balanced
+        type: choice
+        options:
+          - Original - High
+          - Original - Balanced
+          - 2160p - High
+          - 2160p - Balanced
+          - 1440p - High
+          - 1440p - Balanced
+          - 1080p - High
+          - 1080p - Balanced
+          - 720p - High
+          - 720p - Balanced
+          - 480p - High
+          - 480p - Balanced
+          - 360p - High
+          - 360p - Balanced
+      crf:
+        description: CRF 0-51 (lower = higher quality/larger file); auto uses High 18 or Balanced 23
+        required: true
+        default: 'auto'
         type: string
       audio_track:
-        description: Selected audio stream index (auto picks first audio)
-        default: auto
+        description: auto, zero-based track number (0, 1...), or language code (eng, hin...)
         required: true
+        default: auto
+        type: string
+      tmdb_url:
+        description: TMDB movie/TV URL for English original logo (blank disables title overlay)
+        required: false
+        type: string
+      title_animation:
+        description: Enable title animation
+        type: boolean
+        default: true
+        required: true
+      show_logo:
+        description: Show English title logo (requires TMDB URL)
+        type: boolean
+        default: true
+        required: true
+      show_name:
+        description: Show output name
+        type: boolean
+        default: true
+        required: true
+      show_message:
+        description: Show Sinhala message
+        type: boolean
+        default: true
+        required: true
+      overlay_start:
+        description: Title animation start (seconds or HH:MM:SS)
+        required: true
+        default: '5'
+        type: string
+      overlay_duration:
+        description: Title animation duration in seconds (4 to 60)
+        required: true
+        default: '8'
+        type: string
+      source_commit:
+        description: Uploaded subtitle commit (set automatically by the Vercel page)
+        required: false
+        type: string
+      job_id:
+        description: Portal tracking ID (set automatically by the Vercel page)
+        required: false
         type: string
 
 concurrency:
