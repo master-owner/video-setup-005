@@ -131,21 +131,23 @@ concurrency:
 
 jobs:
   encode-and-telegram-upload:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_commit || github.sha }}
           fetch-depth: 1
 
       - name: Setup Python
-        uses: actions/setup-python@0a5c61591373683505ea898e09a8ea3fddc11a7e
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt cryptography
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install cryptography requests
 
       - name: Setup FFmpeg
         run: |
@@ -227,7 +229,7 @@ jobs:
 
       - name: Saved video mapping receipt
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-telegram-mapping
           path: mapping-result.json
