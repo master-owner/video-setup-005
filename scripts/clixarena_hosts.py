@@ -66,30 +66,42 @@ def upload_abyss(path, name, key, mask=lambda _: None, run=subprocess.run):
     escaped = url.replace('\\', '\\\\').replace('"', '\\"')
     filename = name.replace('\\', '\\\\').replace('"', '\\"')
     form = 'file=@' + str(path) + ';filename="' + filename + '"'
-    response = run_upload(
-        ['curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
-         '--connect-timeout', '30', '--keepalive-time', '5', '--max-time', '3600',
-         '--speed-limit', '1024', '--speed-time', '30',
-         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-         '--form', form],
-        input='url = "' + escaped + '"\n',
-        capture_output=True,
-        text=True,
-        timeout=3610,
-        runner=run,
-        label='Abyss',
-        size=file_size(path)
-    )
-    if response.returncode:
-        raise ValueError('Abyss upload failed or timed out. Check the account before uploading again.')
-    try:
-        body = json.loads(response.stdout)
-    except (ValueError, TypeError):
-        raise ValueError('Abyss upload response was not understood. Check account before uploading again.') from None
-    slug = body.get('slug') if isinstance(body, dict) else None
-    if not isinstance(slug, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', slug):
-        raise ValueError('Abyss upload returned no valid video ID. Check account before uploading again.')
-    return slug
+
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f'Abyss upload attempt {attempt} of {max_attempts}...', flush=True)
+            response = run_upload(
+                ['curl', '--config', '-', '--silent', '--fail', '--proto', '=https',
+                 '--connect-timeout', '30', '--keepalive-time', '5', '--max-time', '3600',
+                 '--speed-limit', '1024', '--speed-time', '30',
+                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                 '--form', form],
+                input='url = "' + escaped + '"\n',
+                capture_output=True,
+                text=True,
+                timeout=3610,
+                runner=run,
+                label='Abyss',
+                size=file_size(path)
+            )
+            if response.returncode != 0:
+                raise ValueError(f'Abyss upload returned non-zero code {response.returncode}')
+
+            body = json.loads(response.stdout)
+            slug = body.get('slug') if isinstance(body, dict) else None
+            if not isinstance(slug, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', slug):
+                raise ValueError('Abyss upload returned no valid video ID')
+
+            return slug
+        except Exception as error:
+            print(f'::warning::Abyss upload attempt {attempt} failed: {error}', flush=True)
+            if attempt < max_attempts:
+                wait_s = attempt * 10
+                print(f'Retrying Abyss upload in {wait_s}s without re-encoding...', flush=True)
+                time.sleep(wait_s)
+            else:
+                raise ValueError('Abyss upload failed after all retry attempts. Check network and account.') from None
 
 
 def verify_abyss(file_id, key, size, name, attempts=6, pause=time.sleep):
