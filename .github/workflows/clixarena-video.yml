@@ -195,7 +195,7 @@ jobs:
           matrix: ${{ steps.video.outputs.matrix }}
       - name: Stage encoding manifest
         if: ${{ steps.video.outputs.distributed == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: parallel-manifest
           path: parallel-media/manifest.json
@@ -203,7 +203,7 @@ jobs:
           if-no-files-found: error
       - name: Stage burn fonts and artwork
         if: ${{ steps.video.outputs.distributed == 'true' && inputs.subtitle_method == 'burn' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: parallel-assets
           path: parallel-media/assets/
@@ -212,7 +212,7 @@ jobs:
           if-no-files-found: error
       - name: Stage source audio/subtitle for parallel companion
         if: ${{ steps.video.outputs.distributed == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: parallel-companion-source
           path: |
@@ -225,7 +225,7 @@ jobs:
           if-no-files-found: error
       - name: Stage FFmpeg binaries for workers and finalize
         if: ${{ steps.video.outputs.distributed == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: parallel-ffmpeg
           path: |
@@ -236,7 +236,7 @@ jobs:
           if-no-files-found: ignore
       - name: Saved video mapping
         if: ${{ always() && !inputs.sample_only }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-mapping
           path: mapping-result.json
@@ -244,7 +244,7 @@ jobs:
           retention-days: 7
       - name: Downloadable sample
         if: ${{ inputs.sample_only && success() && steps.video.outputs.distributed != 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-sample
           path: preview/sample.mp4
@@ -252,7 +252,7 @@ jobs:
           retention-days: 3
       - name: Selected subtitle companion
         if: ${{ inputs.subtitle_method == 'soft' && success() && steps.video.outputs.distributed != 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-subtitle
           path: preview/subtitle.srt
@@ -280,7 +280,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Download FFmpeg from stage
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: parallel-ffmpeg
@@ -291,22 +291,22 @@ jobs:
             curl -sL --connect-timeout 15 --max-time 120 https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || true
           fi
           sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           name: parallel-source-${{ matrix.chunk }}
           path: parallel-media
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           name: parallel-manifest
           path: parallel-media
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         if: ${{ inputs.subtitle_method == 'burn' }}
         with:
           name: parallel-assets
           path: parallel-media/assets
       - name: Encode and validate this chunk
         run: python3 -u scripts/clixarena_distributed.py worker --index '${{ matrix.chunk }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@v4
         with:
           name: parallel-encoded-${{ matrix.chunk }}
           path: |
@@ -329,7 +329,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Download FFmpeg from stage
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: parallel-ffmpeg
@@ -340,17 +340,17 @@ jobs:
             curl -sL --connect-timeout 15 --max-time 120 https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || true
           fi
           sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           name: parallel-manifest
           path: parallel-media
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           name: parallel-companion-source
           path: parallel-media
       - name: Prepare and validate AAC companion
         run: python3 -u scripts/clixarena_distributed.py companion
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@v4
         with:
           name: parallel-companion
           path: |
@@ -373,7 +373,7 @@ jobs:
           ref: ${{ inputs.source_commit || github.sha }}
           persist-credentials: false
       - name: Download FFmpeg from stage
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: parallel-ffmpeg
@@ -384,16 +384,16 @@ jobs:
             curl -sL --connect-timeout 15 --max-time 120 https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' || true
           fi
           sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe 2>/dev/null || true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           pattern: parallel-encoded-*
           merge-multiple: true
           path: parallel-media
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           name: parallel-companion
           path: parallel-media
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@v4
         with:
           name: parallel-manifest
           path: parallel-media
@@ -410,7 +410,7 @@ jobs:
         run: python3 -u scripts/clixarena_distributed.py merge
       - name: Mapping receipt
         if: ${{ always() && !inputs.sample_only }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-mapping
           path: mapping-result.json
@@ -418,7 +418,7 @@ jobs:
           retention-days: 7
       - name: Sample MP4
         if: ${{ success() && inputs.sample_only }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-sample
           path: preview/sample.mp4
@@ -426,7 +426,7 @@ jobs:
           retention-days: 3
       - name: Subtitle companion
         if: ${{ success() && inputs.subtitle_method == 'soft' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@v4
         with:
           name: CLIXARENA-subtitle
           path: preview/subtitle.srt

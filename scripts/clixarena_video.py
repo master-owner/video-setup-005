@@ -507,26 +507,52 @@ def audio_encoding_args(streams, audio_map):
 
 
 def soft_mp4_args(streams, audio_map, duration, crf, language='sin', options=None):
-    video=next(s for s in streams if s.get('codec_type')=='video')
-    args=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y',
-          '-i','source.video','-sub_charenc','UTF-8','-i','sinhala.srt',
-          '-map','0:v:0','-map',audio_map,'-map','1:s:0','-map_metadata','-1','-map_chapters','-1']
-    if video.get('codec_name')=='h264':
-        print('H.264 video: copying without re-encoding',flush=True)
-        args+=['-c:v','copy']
+    video = next(s for s in streams if s.get('codec_type') == 'video')
+    args = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+            '-i', 'source.video', '-sub_charenc', 'UTF-8', '-i', 'sinhala.srt',
+            '-map', '0:v:0', '-map', audio_map, '-map', '1:s:0', '-map_metadata', '-1', '-map_chapters', '-1']
+
+    # Ultra-fast Stream Copy (Pass-through video without re-encoding)
+    # Copies video stream directly without losing original quality or wasting encoding time
+    layout = (options or {}).get('layout', {}) if isinstance(options, dict) else {}
+    upload_host = layout.get('uploadHost', '')
+
+    # Telegram DEDICATED ONLY: Ultra-fast stream copy without re-encoding
+    if upload_host == 'telegram':
+        print(f"Telegram mode: direct stream copy ({video.get('codec_name', 'video')}) without re-encoding; injecting clean subtitle", flush=True)
+        args += ['-c:v', 'copy']
+    elif video.get('codec_name') == 'h264':
+        print('H.264 video: copying without re-encoding', flush=True)
+        args += ['-c:v', 'copy']
     else:
-        print('Source video is not H.264: converting video to H.264',flush=True)
-        args+=['-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p']
-    args+=audio_encoding_args(streams,audio_map)
-    audio=[s for s in streams if s.get('codec_type')=='audio']
+        print('Source video is not H.264: converting video to H.264', flush=True)
+        args += ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p']
+
+    # Audio handling: stream copy if AAC/compatible, or convert only audio stream
+    audio = [s for s in streams if s.get('codec_type') == 'audio']
     if audio:
-        selected=audio[int(audio_map.split(':')[-1].rstrip('?'))]
-        code=selected.get('tags',{}).get('language','')
-        if re.fullmatch('[a-z]{2,3}',code):args+=['-metadata:s:a:0','language='+code]
-        args+=['-disposition:a:0','default']
-    return args+['-c:s','mov_text','-metadata:s:s:0','language='+language,
-                 '-metadata:s:s:0','title='+('Sinhala' if language=='sin' else 'English'),'-disposition:s:0','0',
-                 '-t',str(duration),'-movflags','+faststart']
+        selected = audio[int(audio_map.split(':')[-1].rstrip('?'))]
+        if selected.get('codec_name') in ('aac', 'mp3', 'ac3') and upload_host == 'telegram':
+            print(f"Audio stream copy ({selected.get('codec_name')}): copying without re-encoding", flush=True)
+            args += ['-c:a', 'copy']
+        else:
+            args += audio_encoding_args(streams, audio_map)
+        code = selected.get('tags', {}).get('language', '')
+        if re.fullmatch('[a-z]{2,3}', code):
+            args += ['-metadata:s:a:0', 'language=' + code]
+        args += ['-disposition:a:0', 'default']
+    else:
+        args += audio_encoding_args(streams, audio_map)
+
+    # Subtitle handling: strip old embedded subtitles and inject only our clean subtitle
+    # In MP4 container, mov_text is used; in MKV/passthrough srt is used.
+    is_mp4 = True
+    sub_codec = 'mov_text' if is_mp4 else 'srt'
+    
+    return args + ['-c:s', sub_codec, '-metadata:s:s:0', 'language=' + language,
+                 '-metadata:s:s:0', 'title=' + ('Sinhala' if language == 'sin' else 'English'),
+                 '-disposition:s:0', 'default',
+                 '-t', str(duration), '-movflags', '+faststart']
 
 
 def transfer_mp4_args(streams, crf=23, preset='veryfast'):
@@ -1086,7 +1112,7 @@ def main():
                     else:
                         a_map_args = ['-map', audio_map] + audio_encoding_args(source['streams'], audio_map)
                     encode_progress(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y'] + inputs +
-                             ['-filter_complex_threads', '4', '-map', '[video]'] + a_map_args + ['-filter_complex', filters,
+                             ['-filter_complex_threads', '0', '-threads', '0', '-map', '[video]'] + a_map_args + ['-filter_complex', filters,
                              '-c:v', 'libx264', '-preset', options['preset'], '-crf', str(options['crf']),
                              '-pix_fmt', 'yuv420p',
                              '-t', str(total_encode_duration), '-movflags', '+faststart'], total_encode_duration)
@@ -1098,8 +1124,15 @@ def main():
                     encoded_video=next((s for s in streams if s.get('codec_type')=='video'),{})
                     if (encoded_video.get('width'),encoded_video.get('height'))!=(width,height):
                         raise DownloadError('Output frame dimensions differ from the selected resolution. Upload was not started.')
-                if not any(s.get('codec_name') == 'h264' for s in streams) or any(s.get('codec_type') == 'audio' and s.get('codec_name') != 'aac' for s in streams):
-                    raise DownloadError('Output validation failed: expected H.264 video and AAC audio. Upload was not started.')
+                layout_now = options.get('layout', {}) if isinstance(options, dict) else {}
+                upload_host_now = layout_now.get('uploadHost', '')
+
+                if upload_host_now == 'telegram':
+                    if not any(s.get('codec_type') == 'video' for s in streams):
+                        raise DownloadError('Output validation failed: missing video stream for Telegram. Upload was not started.')
+                else:
+                    if not any(s.get('codec_name') == 'h264' for s in streams) or any(s.get('codec_type') == 'audio' and s.get('codec_name') != 'aac' for s in streams):
+                        raise DownloadError('Output validation failed: expected H.264 video and AAC audio. Upload was not started.')
                 if abs(expected_duration - float(output['format']['duration'])) > 2:
                     raise DownloadError(f'Output validation failed: source duration {expected_duration:.3f}s; MP4 duration {float(output["format"]["duration"]):.3f}s; difference exceeds 2 seconds. Upload was not started.')
                 if method == 'soft':

@@ -237,7 +237,8 @@ def worker(index):
         else:
             filters=f'scale={cw}:{ch},setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setpts=PTS-STARTPTS'
             args+=['-map','0:v:0','-vf',filters]
-        args+=['-an','-sn','-dn','-c:v','libx264','-preset',data['preset'],'-crf',str(data['crf']),'-pix_fmt','yuv420p','-fps_mode','passthrough','-map_metadata','-1']
+        preset = data.get('preset') or 'ultrafast'
+        args+=['-an','-sn','-dn','-c:v','libx264','-preset',preset,'-crf',str(data['crf']),'-pix_fmt','yuv420p','-threads','0','-fps_mode','passthrough','-map_metadata','-1']
         print(f'Encoding {data.get("method","soft")} chunk {index+1} of {data["count"]}',flush=True)
         encode_progress(args,float(metadata['format']['duration'])+(lead_in if index==0 else 0.0),output=target)
     finally:os.chdir(previous)
