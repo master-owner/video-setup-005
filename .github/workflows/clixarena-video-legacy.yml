@@ -181,7 +181,6 @@ jobs:
           OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
           OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
           OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
@@ -379,7 +378,6 @@ jobs:
           OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
           OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
           OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           STREAMTAPE_LOGIN: ${{ secrets.STREAMTAPE_LOGIN }}
           STREAMTAPE_KEY: ${{ secrets.STREAMTAPE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKENS }}
