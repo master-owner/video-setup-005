@@ -29,7 +29,8 @@ from clixarena_features import (settings, subtitle_asset, audio_selection, fetch
                                 shift_srt_timestamps, stealth_audio_filter_chain)
 from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
-from clixarena_hosts import HostError, selected_host, selected_hosts, merge_provider_mapping, upload_abyss, verify_abyss
+from clixarena_hosts import (HostError, selected_host, selected_hosts, merge_provider_mapping,
+                             upload_abyss, verify_abyss, upload_streamhg, verify_streamhg)
 
 def download_source(url,target,limit,root):
     descriptor=json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}').get('torrent')
@@ -812,42 +813,59 @@ def save_mapping(file_id,provider='abyss',quality_ids=None):
 _UPLOAD_VERIFIER = ContextVar('upload_verifier', default=None)
 
 
-def finish_provider_upload(provider,file_id,key,size,output_name):
-    label='Abyss'
-    verify=verify_abyss
-    verified,named=timed_call(label+' metadata verification',verify,file_id,key,size,output_name)
-    if not verified:print('::warning::'+label+' upload accepted; metadata verification is pending. Check the host manager before uploading again.',flush=True)
-    elif not named:print('::warning::'+label+' upload verified, but the stored filename differs. Check the host manager; do not upload again.',flush=True)
-    print(label+' upload complete. Playback processing may still be pending.',flush=True)
+def finish_provider_upload(provider, file_id, key, size, output_name):
+    label = 'StreamHG' if provider == 'streamhg' else 'Abyss'
+    verify = verify_streamhg if provider == 'streamhg' else verify_abyss
+    verified, named = timed_call(label + ' metadata verification', verify, file_id, key, size, output_name)
+    if not verified:
+        print('::warning::' + label + ' upload accepted; metadata verification is pending. Check the host manager before uploading again.', flush=True)
+    elif not named:
+        print('::warning::' + label + ' upload verified, but the stored filename differs. Check the host manager; do not upload again.', flush=True)
+    print(label + ' upload complete. Playback processing may still be pending.', flush=True)
     if os.getenv('GITHUB_OUTPUT'):
-        with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('upload_verified='+str(verified).lower()+'\nupload_host='+provider+'\n')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('upload_verified=' + str(verified).lower() + '\nupload_host=' + provider + '\n')
 
 
-def verify_accepted_upload(provider,file_id,key,size,output_name):
-    submit=_UPLOAD_VERIFIER.get()
+def verify_accepted_upload(provider, file_id, key, size, output_name):
+    submit = _UPLOAD_VERIFIER.get()
     if submit is None:
-        return finish_provider_upload(provider,file_id,key,size,output_name)
-    print('Abyss accepted; checking metadata alongside the next destination. File uploads remain sequential.',flush=True)
-    submit(provider,finish_provider_upload,provider,file_id,key,size,output_name)
+        return finish_provider_upload(provider, file_id, key, size, output_name)
+    print(f'{provider} accepted; checking metadata alongside the next destination. File uploads remain sequential.', flush=True)
+    submit(provider, finish_provider_upload, provider, file_id, key, size, output_name)
 
 
 def complete_upload(path, output_name, values):
-    print('Uploading video to Abyss', flush=True)
+    layout_now = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
+    active_host = selected_host(layout_now)
+    label = 'StreamHG' if active_host == 'streamhg' else 'Abyss'
+    print(f'Uploading video to {label}', flush=True)
     try:
-        file_id = upload_abyss(path, output_name, values['ABYSS_API_KEY'], mask)
-    except Exception:
-        raise DownloadError('Abyss upload failed or response was not verified. Check Abyss before uploading again; no automatic retry.') from None
-    print('Abyss upload accepted', flush=True)
+        if active_host == 'streamhg':
+            api_key = values.get('STREAMHG_API_KEY') or os.getenv('STREAMHG_API_KEY', '')
+            file_id = upload_streamhg(path, output_name, api_key, mask)
+        else:
+            api_key = values.get('ABYSS_API_KEY') or os.getenv('ABYSS_API_KEY', '')
+            file_id = upload_abyss(path, output_name, api_key, mask)
+    except Exception as e:
+        raise DownloadError(f'{label} upload failed: {e}. Check host manager before uploading again; no automatic retry.') from None
+    print(f'{label} upload accepted ({file_id})', flush=True)
     mapping_saved = True
     try:
-        timed_call('Abyss mapping save', save_mapping, file_id, 'abyss')
+        timed_call(f'{label} mapping save', save_mapping, file_id, active_host)
     except Exception:
         mapping_saved = False
-        print('::warning::Abyss upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.', flush=True)
+        print(f'::warning::{label} upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.', flush=True)
     if not mapping_saved:
-        raise DownloadError('Abyss upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
-    verify_accepted_upload('abyss', file_id, values['ABYSS_API_KEY'], path.stat().st_size, output_name)
-    print('Abyss upload completed successfully.', flush=True)
+        raise DownloadError(f'{label} upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
+    verify_accepted_upload(active_host, file_id, api_key, path.stat().st_size, output_name)
+    print(f'{label} upload completed successfully.', flush=True)
+    if os.getenv('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as file:
+            file.write(f'upload_verified=true\nupload_host={active_host}\n')
+    if os.getenv('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
+            file.write(f'### {label} upload verified\nUpload accepted and mapping saved.\n')
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as file:
             file.write('upload_verified=true\nupload_host=abyss\n')
@@ -875,7 +893,7 @@ def main():
     print('CLIXARENA pipeline version 2026.10.20-parallel-preparation', flush=True)
     try:
         values = {name: os.getenv(name, '') for name in
-                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY')}
+                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'STREAMHG_API_KEY')}
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):
@@ -910,10 +928,15 @@ def main():
         if method == 'soft':
             required = tuple(name for name in required if name != 'FONT_PATH')
         if method == 'transfer':
-            required = ('VIDEO_URL', 'ABYSS_API_KEY')
-        required = tuple(n for n in required if n != 'ABYSS_API_KEY')
+            required = ('VIDEO_URL',)
+        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'STREAMHG_API_KEY'))
         if not sample_only:
-            required += ('ABYSS_API_KEY',)
+            layout_check = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
+            target_host = selected_host(layout_check)
+            if target_host == 'streamhg':
+                required += ('STREAMHG_API_KEY',)
+            else:
+                required += ('ABYSS_API_KEY',)
         missing = [name for name in required if not values[name].strip()]
         if missing:
             print('::error::Missing required configuration: ' + ', '.join(missing) +

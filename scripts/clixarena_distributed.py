@@ -315,7 +315,7 @@ def merge():
     if os.getenv('SAMPLE_ONLY','false').lower()=='true':
         shutil.copyfile('clixarena.mp4',preview/'sample.mp4')
         return
-    values = {'ABYSS_API_KEY': os.getenv('ABYSS_API_KEY', '')}
+    values = {'ABYSS_API_KEY': os.getenv('ABYSS_API_KEY', ''), 'STREAMHG_API_KEY': os.getenv('STREAMHG_API_KEY', '')}
     for value in values.values(): mask(value)
     complete_upload(Path('clixarena.mp4'),output_filename(os.getenv('OUTPUT_NAME','CLIXARENA.mp4')),values)
 

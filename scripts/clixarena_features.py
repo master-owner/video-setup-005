@@ -29,6 +29,17 @@ def timestamp(value):
 def settings():
     quality = os.getenv('QUALITY', '720p - Balanced')
     choices = {f'{label} - {tier}': (height, crf) for label,height in [('Original',None)]+[(str(h)+'p',h) for h in (360,480,720,1080,1440,2160)] for tier,crf in [('High',18),('Balanced',23)]}
+    layout = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
+    upload_host = layout.get('uploadHost', 'abyss')
+    
+    # If StreamHG is selected, lock to 720p only (High or Balanced)
+    if upload_host == 'streamhg':
+        if 'High' in quality:
+            quality = '720p - High'
+        else:
+            quality = '720p - Balanced'
+        print('StreamHG upload host active: Enforcing 720p output (' + quality + ')', flush=True)
+
     if quality not in choices:
         raise ValueError('Unsupported quality choice')
     height, crf = choices[quality]

@@ -1,24 +1,31 @@
-"""Upload providers and backward-compatible mappings. No upload retries.
-Configured solely for Abyss.to.
+"""Upload providers and backward-compatible mappings.
+Configured for Abyss.to (Multi-quality) and StreamHG (720p only).
 """
 import json, re, subprocess, time, urllib.parse, urllib.request, urllib.error
 from clixarena_upload_metrics import run_upload, file_size
 
 
+SUPPORTED_HOSTS = ('abyss', 'streamhg')
+
+
 def selected_host(layout):
     value = layout.get('uploadHost', 'abyss')
-    if value != 'abyss':
-        raise ValueError('Abyss is the only supported upload host')
-    return 'abyss'
+    if value not in SUPPORTED_HOSTS:
+        raise ValueError(f"Unsupported upload host '{value}'. Must be 'abyss' or 'streamhg'.")
+    return value
 
 
 def selected_hosts(layout):
-    # Only Abyss is retained
-    return ['abyss']
+    first = selected_host(layout)
+    hosts = [first]
+    second = layout.get('secondUploadHost', '')
+    if second in SUPPORTED_HOSTS and second not in hosts:
+        hosts.append(second)
+    return hosts
 
 
 def merge_provider_mapping(rows, identity, file_id, provider='abyss', quality_ids=None):
-    if provider != 'abyss' or not isinstance(file_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', file_id):
+    if provider not in SUPPORTED_HOSTS or not isinstance(file_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', file_id):
         raise ValueError('Invalid host or video ID')
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError('Invalid mappings')
@@ -33,12 +40,20 @@ def merge_provider_mapping(rows, identity, file_id, provider='abyss', quality_id
             providers.update(row['providers'])
         if row.get('abyss_id') and 'abyss' not in providers:
             providers['abyss'] = {'file_id': row['abyss_id']}
-        if row.get('file_id') and 'abyss' not in providers and row.get('provider') == 'abyss':
-            providers['abyss'] = {'file_id': row['file_id']}
+        if row.get('streamhg_id') and 'streamhg' not in providers:
+            providers['streamhg'] = {'file_id': row['streamhg_id']}
+        if row.get('file_id') and row.get('provider') in SUPPORTED_HOSTS and row.get('provider') not in providers:
+            providers[row['provider']] = {'file_id': row['file_id']}
 
     entry = {'file_id': file_id}
-    providers['abyss'] = entry
-    item = dict(identity, provider='abyss', providers=providers, abyss_id=file_id, file_id=file_id)
+    if quality_ids:
+        entry['quality_ids'] = quality_ids
+    providers[provider] = entry
+    item = dict(identity, provider=provider, providers=providers, file_id=file_id)
+    if provider == 'abyss':
+        item['abyss_id'] = file_id
+    elif provider == 'streamhg':
+        item['streamhg_id'] = file_id
     return [row for row in rows if not matches(row)] + [item]
 
 
@@ -116,6 +131,99 @@ def verify_abyss(file_id, key, size, name, attempts=6, pause=time.sleep):
                 data = json.loads(response.read(1024 * 1024))
             if data.get('id') == file_id and int(data.get('size', -1)) == size:
                 return True, data.get('name') == name
+        except Exception:
+            pass
+        if attempt < attempts - 1:
+            pause(5)
+    return False, False
+
+
+def get_streamhg_upload_server(key):
+    """Retrieve active upload server node from StreamHG API."""
+    url = f"https://streamhgapi.com/api/upload/server?key={urllib.parse.quote(key, safe='')}"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        data = json.loads(response.read().decode('utf-8'))
+        if data.get('status') == 200 and data.get('result'):
+            return data['result']
+        raise ValueError(f"Failed to get StreamHG upload server: {data.get('msg', 'Unknown error')}")
+
+
+def upload_streamhg(path, name, key, mask=lambda _: None, run=subprocess.run):
+    if not key or len(key) > 512 or any(ord(c) < 33 for c in key):
+        raise ValueError('STREAMHG_API_KEY is missing or invalid')
+    if any(c in name for c in ('\r', '\n', '\x00')):
+        raise ValueError('Invalid output name')
+    
+    mask(key)
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f'StreamHG upload attempt {attempt} of {max_attempts}...', flush=True)
+            upload_server = get_streamhg_upload_server(key)
+            mask(upload_server)
+            print(f'StreamHG upload node obtained: {upload_server}', flush=True)
+
+            filename = name.replace('\\', '\\\\').replace('"', '\\"')
+            form_file = 'file=@' + str(path) + ';filename="' + filename + '"'
+            
+            response = run_upload(
+                ['curl', '--silent', '--fail', '--proto', '=https',
+                 '--connect-timeout', '30', '--keepalive-time', '15', '--max-time', '3600',
+                 '--speed-limit', '1024', '--speed-time', '60',
+                 '--http1.1',
+                 '--buffer-size', '131072',
+                 '--tcp-nodelay',
+                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                 '-F', f'key={key}',
+                 '-F', f'file_title={name}',
+                 '-F', form_file,
+                 upload_server],
+                capture_output=True,
+                text=True,
+                timeout=3610,
+                runner=run,
+                label='StreamHG',
+                size=file_size(path)
+            )
+            if response.returncode != 0:
+                raise ValueError(f'StreamHG upload returned non-zero code {response.returncode}')
+
+            body = json.loads(response.stdout)
+            # Response: {"status": 200, "files": [{"filecode": "u9150wqzvhxj", ...}]}
+            filecode = None
+            if isinstance(body, dict):
+                files = body.get('files')
+                if isinstance(files, list) and len(files) > 0:
+                    filecode = files[0].get('filecode')
+            
+            if not isinstance(filecode, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', filecode):
+                raise ValueError(f'StreamHG upload returned no valid filecode: {response.stdout[:200]}')
+
+            print(f'StreamHG upload complete! Filecode: {filecode}', flush=True)
+            return filecode
+        except Exception as error:
+            print(f'::warning::StreamHG upload attempt {attempt} failed: {error}', flush=True)
+            if attempt < max_attempts:
+                wait_s = attempt * 10
+                print(f'Retrying StreamHG upload in {wait_s}s without re-encoding...', flush=True)
+                time.sleep(wait_s)
+            else:
+                raise ValueError('StreamHG upload failed after all retry attempts.') from None
+
+
+def verify_streamhg(file_id, key, size, name, attempts=6, pause=time.sleep):
+    """Check StreamHG file status via API."""
+    url = f"https://streamhgapi.com/api/file/info?key={urllib.parse.quote(key, safe='')}&file_code={file_id}"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if data.get('status') == 200:
+                    result = data.get('result', [])
+                    if result and len(result) > 0 and result[0].get('status') == 200:
+                        return True, True
         except Exception:
             pass
         if attempt < attempts - 1:

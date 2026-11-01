@@ -1,0 +1,31 @@
+name: CLIXARENA Video Inactivity Keep-Alive
+on:
+  schedule:
+    # Runs every 7 days at midnight UTC to prevent inactivity deletion
+    - cron: '0 0 */7 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography
+        run: pip install --no-cache-dir cryptography
+
+      - name: Ping uploaded videos to keep active
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+        run: python scripts/keep_alive_videos.py

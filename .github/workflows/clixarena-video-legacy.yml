@@ -177,6 +177,7 @@ jobs:
           OVERLAY_DURATION: ${{ inputs.overlay_duration }}
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
           OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
           OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
@@ -374,6 +375,7 @@ jobs:
           SUBTITLE_PATH: ${{ inputs.subtitle_path }}
           PORTAL_JOB_ID: ${{ inputs.job_id }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           OK_PUBLIC_KEY: ${{ secrets.OK_PUBLIC_KEY }}
           OK_SECRET_KEY: ${{ secrets.OK_SECRET_KEY }}
           OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
