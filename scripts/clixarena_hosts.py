@@ -179,6 +179,7 @@ def upload_streamhg(path, name, key, mask=lambda _: None, run=subprocess.run):
                  '-F', f'file_title={name}',
                  '-F', form_file,
                  upload_server],
+                input='',
                 capture_output=True,
                 text=True,
                 timeout=3610,
