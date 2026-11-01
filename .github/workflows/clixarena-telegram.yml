@@ -189,6 +189,9 @@ jobs:
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           # In single runner mode, sample_only flag prevents Abyss upload inside clixarena_video so Telegram step can handle it
           ABYSS_API_KEY: "dummy-for-single-runner"
+          SEEDR_EMAIL: ${{ secrets.SEEDR_EMAIL }}
+          SEEDR_PASSWORD: ${{ secrets.SEEDR_PASSWORD }}
+          SEEDR_TOKEN: ${{ secrets.SEEDR_TOKEN }}
         run: |
           python3 -u -c '
           import os, sys, json

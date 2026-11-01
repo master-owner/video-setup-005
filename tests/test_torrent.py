@@ -81,4 +81,79 @@ class Tests(unittest.TestCase):
   session=NS(pop_alerts=lambda:[error,reply],status=lambda:NS(dht_nodes=42));counters={'errors':0,'replies':0}
   output=t.discovery(session,None,None,counters)
   self.assertIn('DHT nodes 42',output);self.assertIn('tracker replies 1',output);self.assertNotIn('SECRET',output)
+ def test_seedr_client_download_success_and_cleanup(self):
+  client = t.SeedrClient(token='test_token')
+  client.authenticate = lambda: 'test_token'
+  client.add_torrent = lambda **kwargs: {'result': True, 'user_torrent_id': 123, 'title': 'Test Movie'}
+  client.list_contents = lambda fid: {'torrents': [], 'folders': [{'id': 456, 'name': 'Test Movie'}], 'files': [{'id': 789, 'folder_file_id': 'ff_789', 'name': 'movie.mkv', 'size': 500}]}
+  client.fetch_file = lambda fid: {'result': True, 'url': 'https://download.seedr.cc/movie.mkv'}
+  cleaned = []
+  client.delete_item = lambda itype, iid: cleaned.append((itype, iid))
+  class FakeResp:
+   def __init__(self): self.read_count = 0
+   def __enter__(self): return self
+   def __exit__(self, *a): pass
+   def read(self, size):
+    if self.read_count == 0:
+     self.read_count += 1
+     return b'A' * 500
+    return b''
+  with patch.dict(os.environ, {'SEEDR_TOKEN': 'test_token'}), \
+       patch.object(t, 'SeedrClient', return_value=client), \
+       patch.object(t.urllib.request, 'urlopen', return_value=FakeResp()), \
+       patch.object(t.shutil, 'disk_usage', return_value=NS(free=50*1024**3)):
+   target = Path('seedr_out.video')
+   try:
+    res = t.download_via_seedr({'kind': 'magnet', 'magnet': 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567'}, target, 1024, Path.cwd(), None)
+    self.assertTrue(res)
+    self.assertEqual(target.stat().st_size, 500)
+    self.assertEqual(cleaned, [('folder', 456)])
+   finally:
+    if target.exists(): target.unlink()
+
+ def test_seedr_client_torrent_file_and_multi_video(self):
+  client = t.SeedrClient(token='test_token')
+  client.authenticate = lambda: 'test_token'
+  client.add_torrent = lambda **kwargs: {'result': True, 'user_torrent_id': 321, 'title': 'Multi Movie'}
+  client.list_contents = lambda fid: {
+   'torrents': [],
+   'folders': [{'id': 654, 'name': 'Multi Movie'}],
+   'files': [
+    {'id': 11, 'folder_file_id': 'ff_11', 'name': 'EP01.mp4', 'size': 300},
+    {'id': 22, 'folder_file_id': 'ff_22', 'name': 'EP02.mp4', 'size': 400}
+   ]
+  }
+  client.fetch_file = lambda fid: {'result': True, 'url': f'https://download.seedr.cc/{fid}'}
+  cleaned = []
+  client.delete_item = lambda itype, iid: cleaned.append((itype, iid))
+
+  class FakeResp:
+   def __init__(self): self.read_count = 0
+   def __enter__(self): return self
+   def __exit__(self, *a): pass
+   def read(self, size):
+    if self.read_count == 0:
+     self.read_count += 1
+     return b'B' * 400
+    return b''
+
+  job_id = "0123456789abcdef0123456789abcdef"
+  with patch.dict(os.environ, {'SEEDR_TOKEN': 'test_token', 'PORTAL_JOB_ID': job_id}), \
+       patch.object(t, 'SeedrClient', return_value=client), \
+       patch.object(t.urllib.request, 'urlopen', return_value=FakeResp()), \
+       patch.object(t.shutil, 'disk_usage', return_value=NS(free=50*1024**3)), \
+       patch.object(t, 'select_file', return_value=1): # select index 1 (EP02.mp4)
+   target = Path('seedr_out_multi.video')
+   torrent_dir = Path('.clixarena/torrents')
+   torrent_dir.mkdir(parents=True, exist_ok=True)
+   dummy_torrent = torrent_dir / f'{job_id}.torrent'
+   dummy_torrent.write_bytes(b'd8:announce3:url4:infod4:name4:testee')
+   try:
+    res = t.download_via_seedr({'kind': 'file', 'path': f'.clixarena/torrents/{job_id}.torrent'}, target, 1024, Path.cwd(), None)
+    self.assertTrue(res)
+    self.assertEqual(target.stat().st_size, 400)
+    self.assertEqual(cleaned, [('folder', 654)])
+   finally:
+    if target.exists(): target.unlink()
+    if dummy_torrent.exists(): dummy_torrent.unlink()
 if __name__ == "__main__": unittest.main()

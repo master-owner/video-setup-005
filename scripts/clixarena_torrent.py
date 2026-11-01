@@ -1,4 +1,4 @@
-"""Public torrent video selection and piece-verified download. No raw alerts/URLs."""
+"""Public torrent video selection and piece-verified download with Seedr.cc API cloud caching."""
 import base64
 import ipaddress
 import json
@@ -7,9 +7,12 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
 
 class TorrentError(Exception):pass
 VIDEO={'.mkv','.mp4','.webm','.avi','.mov','.m4v','.ts','.m2ts'}
@@ -113,7 +116,308 @@ def prepare(lt,descriptor,root):
     params.flags &= ~lt.torrent_flags.paused
     return params
 
+class SeedrClient:
+    """Lightweight standalone client for Seedr.cc REST and Extension OAuth APIs."""
+    TOKEN_URL = "https://www.seedr.cc/oauth_test/token.php"
+    RESOURCE_URL = "https://www.seedr.cc/oauth_test/resource.php"
+
+    def __init__(self, email="", password="", token=""):
+        self.email = (email or "").strip()
+        self.password = (password or "").strip()
+        self.token = (token or "").strip()
+
+    def authenticate(self):
+        if self.token:
+            return self.token
+        if not self.email or not self.password:
+            raise TorrentError("Seedr credentials (SEEDR_EMAIL and SEEDR_PASSWORD or SEEDR_TOKEN) are required.")
+        payload = urllib.parse.urlencode({
+            "grant_type": "password",
+            "client_id": "seedr_chrome",
+            "type": "login",
+            "username": self.email,
+            "password": self.password,
+        }).encode("utf-8")
+        req = urllib.request.Request(self.TOKEN_URL, data=payload, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                self.token = data.get("access_token") or ""
+                if not self.token:
+                    raise TorrentError("Seedr login failed: No access token received.")
+                return self.token
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = json.loads(e.read().decode("utf-8"))
+                desc = err_body.get("error_description") or err_body.get("error") or str(e)
+            except Exception:
+                desc = str(e)
+            raise TorrentError(f"Seedr authentication error: {desc}")
+        except Exception as e:
+            raise TorrentError(f"Seedr connection error during login: {e}")
+
+    def call_resource(self, func, data=None, files=None):
+        if not self.token:
+            self.authenticate()
+        query = urllib.parse.urlencode({"access_token": self.token, "func": func})
+        url = f"{self.RESOURCE_URL}?{query}"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        }
+
+        if files:
+            boundary = uuid.uuid4().hex
+            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+            parts = []
+            for k, v in (data or {}).items():
+                parts.append(f"--{boundary}".encode("utf-8"))
+                parts.append(f'Content-Disposition: form-data; name="{k}"'.encode("utf-8"))
+                parts.append(b"")
+                parts.append(str(v).encode("utf-8"))
+            for field_name, file_tuple in files.items():
+                fname, fbytes = file_tuple
+                parts.append(f"--{boundary}".encode("utf-8"))
+                parts.append(f'Content-Disposition: form-data; name="{field_name}"; filename="{fname}"'.encode("utf-8"))
+                parts.append(b"Content-Type: application/x-bittorrent")
+                parts.append(b"")
+                parts.append(fbytes)
+            parts.append(f"--{boundary}--".encode("utf-8"))
+            parts.append(b"")
+            encoded_body = b"\r\n".join(parts)
+        else:
+            encoded_body = urllib.parse.urlencode(data or {}).encode("utf-8") if data is not None else None
+
+        req = urllib.request.Request(url, data=encoded_body, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                body = json.loads(e.read().decode("utf-8"))
+                if body.get("error") == "expired_token" and self.email and self.password:
+                    self.token = ""
+                    self.authenticate()
+                    return self.call_resource(func, data, files)
+            except Exception:
+                pass
+            raise
+
+    def list_contents(self, folder_id="0"):
+        return self.call_resource("list_contents", {"content_type": "folder", "content_id": str(folder_id)})
+
+    def add_torrent(self, magnet=None, torrent_file_bytes=None, torrent_filename="upload.torrent"):
+        if torrent_file_bytes:
+            files = {"torrent_file": (torrent_filename, torrent_file_bytes)}
+            return self.call_resource("add_torrent", {"folder_id": "-1"}, files=files)
+        return self.call_resource("add_torrent", {"torrent_magnet": magnet, "folder_id": "-1"})
+
+    def fetch_file(self, folder_file_id):
+        return self.call_resource("fetch_file", {"folder_file_id": str(folder_file_id)})
+
+    def delete_item(self, item_type, item_id):
+        try:
+            payload = {"delete_arr": json.dumps([{"type": item_type, "id": str(item_id)}])}
+            return self.call_resource("delete", payload)
+        except Exception as e:
+            print(f"::warning::Seedr cleanup failed for {item_type} {item_id}: {e}", flush=True)
+            return None
+
+def download_via_seedr(descriptor, target, limit, root, request):
+    """Downloads torrent or magnet using Seedr cloud caching and direct high-speed HTTP transfer."""
+    email = os.getenv("SEEDR_EMAIL", "").strip()
+    password = os.getenv("SEEDR_PASSWORD", "").strip()
+    token = os.getenv("SEEDR_TOKEN", "").strip()
+    if not token and not (email and password):
+        return False
+
+    kind = descriptor.get("kind")
+    magnet = descriptor.get("magnet")
+    torrent_bytes = None
+    torrent_filename = "upload.torrent"
+
+    if kind == "file":
+        path = descriptor.get("path", "")
+        job = os.getenv("PORTAL_JOB_ID", "")
+        if not re.fullmatch(r"[a-f0-9]{32}", job) or path != f".clixarena/torrents/{job}.torrent":
+            return False
+        asset = root / path
+        if asset.is_file() and not asset.is_symlink() and asset.stat().st_size <= 1024 * 1024:
+            torrent_bytes = asset.read_bytes()
+            torrent_filename = f"{job}.torrent"
+        else:
+            return False
+    elif kind == "magnet" and magnet:
+        pass
+    else:
+        return False
+
+    print("Seedr credentials detected. Attempting high-speed cloud caching via Seedr...", flush=True)
+    client = SeedrClient(email=email, password=password, token=token)
+    try:
+        client.authenticate()
+    except Exception as e:
+        print(f"::warning::Seedr authentication failed ({e}). Falling back to libtorrent direct P2P.", flush=True)
+        return False
+
+    try:
+        # Step 1: Add torrent magnet or file to Seedr
+        if torrent_bytes:
+            print("Uploading .torrent file to Seedr...", flush=True)
+            add_res = client.add_torrent(torrent_file_bytes=torrent_bytes, torrent_filename=torrent_filename)
+        else:
+            add_res = client.add_torrent(magnet=magnet)
+
+        user_torrent_id = add_res.get("user_torrent_id")
+        title = add_res.get("title") or "Torrent"
+        if not add_res.get("result", True):
+            print(f"::warning::Seedr rejected torrent ({add_res}). Falling back to libtorrent.", flush=True)
+            return False
+
+        print(f"Torrent '{title}' queued on Seedr (ID: {user_torrent_id}). Waiting for cloud caching...", flush=True)
+
+        # Step 2: Poll status until complete or timeout
+        deadline = time.monotonic() + 900  # 15 minutes timeout
+        completed_folder = None
+        completed_files = None
+        last_progress_log = 0
+
+        while time.monotonic() < deadline:
+            contents = client.list_contents("0")
+            torrents = contents.get("torrents", [])
+            folders = contents.get("folders", [])
+            root_files = contents.get("files", [])
+
+            active = None
+            if user_torrent_id:
+                active = next((t for t in torrents if str(t.get("id")) == str(user_torrent_id)), None)
+            if not active and torrents:
+                active = torrents[0]
+
+            if active:
+                now = time.monotonic()
+                if now - last_progress_log >= 10:
+                    prog = active.get("progress", "0")
+                    rate = active.get("download_rate", 0) / (1024 * 1024)
+                    print(f"Seedr cloud download {prog}% | {rate:.2f} MiB/s | seeders: {active.get('seeders', 0)}", flush=True)
+                    last_progress_log = now
+            else:
+                # Active transfer is no longer in torrents queue; it should have landed in folders or files
+                for fld in folders:
+                    sub = client.list_contents(str(fld.get("id")))
+                    v_files = [f for f in sub.get("files", []) if Path(f.get("name", "")).suffix.lower() in VIDEO and f.get("size", 0) > 0]
+                    if v_files:
+                        completed_folder = fld
+                        completed_files = v_files
+                        break
+
+                if not completed_files and root_files:
+                    v_files = [f for f in root_files if Path(f.get("name", "")).suffix.lower() in VIDEO and f.get("size", 0) > 0]
+                    if v_files:
+                        completed_files = v_files
+
+                if completed_files:
+                    break
+
+            time.sleep(3)
+
+        if not completed_files:
+            print("::warning::Seedr transfer did not finish within time limit. Falling back to libtorrent.", flush=True)
+            if user_torrent_id:
+                client.delete_item("torrent", user_torrent_id)
+            return False
+
+        # Step 3: Multi-video handling! If multiple video files exist, trigger selection in Portal UI
+        file_choices = []
+        for idx, f in enumerate(completed_files):
+            file_choices.append({
+                "index": idx,
+                "name": f.get("name", f"file-{idx}"),
+                "bytes": int(f.get("size", 0)),
+                "raw_file": f,
+            })
+
+        if len(file_choices) == 1:
+            selected_file = file_choices[0]
+            print(f"Single video found in torrent: '{selected_file['name']}'", flush=True)
+        else:
+            print(f"Multiple videos found in torrent ({len(file_choices)} files). Waiting for user selection in portal...", flush=True)
+            portal_choices = [{"index": c["index"], "name": c["name"], "bytes": c["bytes"]} for c in file_choices]
+            sel_idx = select_file(portal_choices, request)
+            selected_file = next(c for c in file_choices if c["index"] == sel_idx)
+            print(f"User selected: '{selected_file['name']}'", flush=True)
+
+        size = selected_file["bytes"]
+        if size > limit:
+            raise TorrentError("Selected video exceeds the 12 GB source limit.")
+        if shutil.disk_usage(".").free < size * 3 + 2 * 1024**3:
+            raise TorrentError("Not enough runner space for this video and processing. Select a smaller file.")
+
+        raw = selected_file["raw_file"]
+        folder_file_id = raw.get("folder_file_id") or raw.get("id")
+        file_info = client.fetch_file(folder_file_id)
+        download_url = file_info.get("url")
+        if not download_url:
+            raise TorrentError("Seedr failed to generate direct download link.")
+
+        print(f"Downloading '{selected_file['name']}' ({size / (1024**2):.1f} MB) at high speed from Seedr CDN...", flush=True)
+
+        # Step 4: Stream download directly to target with progress
+        target_path = Path(target)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        req_dl = urllib.request.Request(download_url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "*/*",
+        })
+        with urllib.request.urlopen(req_dl, timeout=120) as resp, open(target_path, "wb") as out_f:
+            copied = 0
+            last_dl_log = time.monotonic()
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+                copied += len(chunk)
+                if time.monotonic() - last_dl_log >= 10:
+                    print(f"Seedr CDN transfer {min(100.0, copied / size * 100):.1f}% ({copied / 1024**2:.1f} MB)", flush=True)
+                    last_dl_log = time.monotonic()
+
+        if target_path.stat().st_size != size:
+            raise TorrentError("Downloaded Seedr video size mismatch.")
+
+        print("Seedr high-speed download successfully completed!", flush=True)
+
+        # Step 5: Cleanup from Seedr cloud storage to keep 2GB free storage available
+        print("Cleaning up Seedr cloud storage for subsequent jobs...", flush=True)
+        if completed_folder:
+            client.delete_item("folder", completed_folder.get("id"))
+        else:
+            client.delete_item("file", folder_file_id)
+
+        return True
+
+    except TorrentError:
+        raise
+    except Exception as e:
+        print(f"::warning::Seedr download failed ({e}). Falling back to libtorrent direct P2P.", flush=True)
+        return False
+
 def download_torrent(descriptor,target,limit,root,request):
+    # Try high-speed Seedr cloud caching first if credentials are configured
+    try:
+        if download_via_seedr(descriptor, target, limit, root, request):
+            return target
+    except TorrentError:
+        raise
+    except Exception as e:
+        print(f"::warning::Seedr resolver exception: {e}. Continuing with libtorrent...", flush=True)
+
     try:import libtorrent as lt
     except ImportError:raise TorrentError('libtorrent is missing. Update the Actions workflow and media tools.') from None
     folder=Path('.torrent-payload').resolve();folder.mkdir()
@@ -166,4 +470,3 @@ def download_torrent(descriptor,target,limit,root,request):
         if handle is not None:handle.pause();session.remove_torrent(handle)
         session.pause()
         # session must release its disk worker before the directory is cleaned by the outer job.
-
