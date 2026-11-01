@@ -62,13 +62,14 @@ jobs:
           path: parallel-media
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
-      - name: Final join and upload to Abyss
+      - name: Final join and upload to host
         env:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           MAPPING_GITHUB_TOKEN: ${{ github.token }}
           OVERLAY_LAYOUT: ${{ inputs.overlay_layout }}
           OUTPUT_NAME: ${{ inputs.output_name }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
         run: python3 -u scripts/clixarena_distributed.py merge
       - name: Mapping receipt
         if: always()

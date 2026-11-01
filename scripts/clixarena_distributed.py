@@ -133,6 +133,7 @@ def prepare(destination, streams, audio_map, duration, options, language='eng', 
             if Path(filename).is_file():shutil.copyfile(filename,assets/filename)
         if Path('fonts').is_dir():shutil.copytree('fonts',assets/'fonts',dirs_exist_ok=True)
     render={key:options[key] for key in ('parts','layout','start','duration','subtitle_enabled','watermark_enabled','okru_stealth','intro_lead_in') if key in options}
+    overlay_layout_raw = os.getenv('OVERLAY_LAYOUT', '')
     render['content_size']=[cw,ch]
     data=dict(version=1,method=method,count=len(parts),starts=starts,width=width,height=height,content=[cw,ch],
               duration=duration,packets=None,validation='worker-receipts',crf=options['crf'],preset=options['preset'],
@@ -140,7 +141,7 @@ def prepare(destination, streams, audio_map, duration, options, language='eng', 
               audio_languages=[t.get('tags',{}).get('language','und') for t in selected_audio],
               audio_defaults=[bool(t.get('disposition',{}).get('default')) for t in selected_audio],
               subtitle_languages=[t.get('tags',{}).get('language','und') for t in retained],
-              audio_offset=audio_offset,subtitle_count=1 if method=='soft' else len(retained),render=render,logo_size=logo_size)
+              audio_offset=audio_offset,subtitle_count=1 if method=='soft' else len(retained),render=render,logo_size=logo_size,overlay_layout=overlay_layout_raw)
     (root/'manifest.json').write_text(json.dumps(data),encoding='utf-8')
     with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
         output.write('distributed=true\nmatrix='+json.dumps(list(range(len(parts))))+'\n')
@@ -256,6 +257,9 @@ def worker(index):
 def merge():
     from clixarena_video import complete_upload, output_filename, mask
     data = manifest()
+    if not os.getenv('OVERLAY_LAYOUT', '').strip() and data.get('overlay_layout'):
+        print('Recovered OVERLAY_LAYOUT from manifest.json', flush=True)
+        os.environ['OVERLAY_LAYOUT'] = data['overlay_layout']
     paths = [ROOT / f'encoded-{i:02d}.mp4' for i in range(data['count'])]
     if data.get('validation')=='worker-receipts':
         expected=0
