@@ -52,7 +52,7 @@ def _summary(stdout,label,elapsed,ok):
     return stdout
 
 
-def run_upload(args,*,input,capture_output=True,text=True,timeout=3610,runner=subprocess.run,label='Streamtape',size=None):
+def run_upload(args,*,input="",capture_output=True,text=True,timeout=3610,runner=subprocess.run,label='Streamtape',size=None):
     if label not in _LABELS:raise ValueError('Unknown upload telemetry label')
     args=list(args);previous=''
     # Avoid curl's default one-second stall when an HTTP/1.1 upload server
