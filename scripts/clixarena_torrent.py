@@ -423,8 +423,6 @@ def download_via_seedr(descriptor, target, limit, root, request):
 
         return True
 
-    except TorrentError:
-        raise
     except Exception as e:
         print(f"::warning::Seedr download failed ({e}). Falling back to libtorrent direct P2P.", flush=True)
         return False
@@ -434,8 +432,6 @@ def download_torrent(descriptor,target,limit,root,request):
     try:
         if download_via_seedr(descriptor, target, limit, root, request):
             return target
-    except TorrentError:
-        raise
     except Exception as e:
         print(f"::warning::Seedr resolver exception: {e}. Continuing with libtorrent...", flush=True)
 
