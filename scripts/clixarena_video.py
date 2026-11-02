@@ -938,7 +938,7 @@ def main():
             required = tuple(name for name in required if name != 'FONT_PATH')
         if method == 'transfer':
             required = ('VIDEO_URL',)
-        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'EARNVIDS_API_KEY'))
+        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'EARNVIDS_API_KEY', 'VIDHIDE_API_KEY'))
         if not sample_only:
             layout_check = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
             target_host = selected_host(layout_check)
