@@ -26,7 +26,8 @@ jobs:
           MAPPING_GITHUB_TOKEN: ${{ secrets.MAPPING_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
-          EARNVIDS_API_KEY: ${{ secrets.EARNVIDS_API_KEY || secrets.VIDHIDE_API_KEY }}
+          BYSE_API_KEY: ${{ secrets.BYSE_API_KEY || secrets.FILEMOON_API_KEY }}
+          FILEMOON_API_KEY: ${{ secrets.BYSE_API_KEY || secrets.FILEMOON_API_KEY }}
           ABYSS_AUTH_TOKEN: ${{ secrets.ABYSS_AUTH_TOKEN }}
           ABYSS_EMAIL: ${{ secrets.ABYSS_EMAIL }}
           ABYSS_PASSWORD: ${{ secrets.ABYSS_PASSWORD }}

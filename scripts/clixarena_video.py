@@ -31,7 +31,7 @@ from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
 from clixarena_hosts import (HostError, selected_host, selected_hosts, merge_provider_mapping,
                              upload_abyss, verify_abyss,
-                             upload_earnvids, verify_earnvids)
+                             upload_byse, verify_byse)
 
 def download_source(url,target,limit,root):
     descriptor=json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}').get('torrent')
@@ -815,9 +815,9 @@ _UPLOAD_VERIFIER = ContextVar('upload_verifier', default=None)
 
 
 def finish_provider_upload(provider, file_id, key, size, output_name):
-    if provider == 'earnvids':
-        label = 'EarnVids'
-        verify = verify_earnvids
+    if provider == 'byse':
+        label = 'Byse'
+        verify = verify_byse
     else:
         label = 'Abyss'
         verify = verify_abyss
@@ -829,7 +829,7 @@ def finish_provider_upload(provider, file_id, key, size, output_name):
     print(label + ' upload complete. Playback processing may still be pending.', flush=True)
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            output.write('upload_verified=' + str(verified).lower() + '\nupload_host=' + provider + '\n')
+            output.write(f'upload_verified={str(verified).lower()}\nupload_host={provider}\n')
 
 
 def verify_accepted_upload(provider, file_id, key, size, output_name):
@@ -847,40 +847,45 @@ def generate_random_server_name(length=25, ext='.mp4'):
     return ''.join(secrets.choice(chars) for _ in range(length)) + ext
 
 def complete_upload(path, output_name, values):
-    server_name = generate_random_server_name(25, '.mp4')
     layout_now = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
-    active_host = selected_host(layout_now)
-    if active_host == 'earnvids':
-        label = 'EarnVids'
-    else:
-        label = 'Abyss'
-    print(f'Uploading video to {label} with protected server name: {server_name}', flush=True)
-    try:
-        if active_host == 'earnvids':
-            api_key = values.get('EARNVIDS_API_KEY') or values.get('VIDHIDE_API_KEY') or os.getenv('EARNVIDS_API_KEY', '') or os.getenv('VIDHIDE_API_KEY', '')
-            file_id = upload_earnvids(path, server_name, api_key, mask)
-        else:
-            api_key = values.get('ABYSS_API_KEY') or os.getenv('ABYSS_API_KEY', '')
-            file_id = upload_abyss(path, server_name, api_key, mask)
-    except Exception as e:
-        raise DownloadError(f'{label} upload failed: {e}. Check host manager before uploading again; no automatic retry.') from None
-    print(f'{label} upload accepted', flush=True)
-    mapping_saved = True
-    try:
-        timed_call(f'{label} mapping save', save_mapping, file_id, active_host)
-    except Exception:
-        mapping_saved = False
-        print(f'::warning::{label} upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.', flush=True)
-    if not mapping_saved:
-        raise DownloadError(f'{label} upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
-    verify_accepted_upload(active_host, file_id, api_key, path.stat().st_size, server_name)
-    print(f'{label} upload completed successfully.', flush=True)
+    target_hosts = selected_hosts(layout_now)
+    print(f'Selected upload targets: {target_hosts}', flush=True)
+    primary_host = target_hosts[0]
+
+    for host in target_hosts:
+        server_name = generate_random_server_name(25, '.mp4')
+        label = 'Byse' if host == 'byse' else 'Abyss'
+        print(f'Uploading video to {label} with protected server name: {server_name}', flush=True)
+        try:
+            if host == 'byse':
+                api_key = values.get('BYSE_API_KEY') or os.getenv('BYSE_API_KEY', '') or values.get('FILEMOON_API_KEY') or os.getenv('FILEMOON_API_KEY', '')
+                file_id = upload_byse(path, server_name, api_key, mask)
+            else:
+                api_key = values.get('ABYSS_API_KEY') or os.getenv('ABYSS_API_KEY', '')
+                file_id = upload_abyss(path, server_name, api_key, mask)
+        except Exception as e:
+            raise DownloadError(f'{label} upload failed: {e}. Check host manager before uploading again; no automatic retry.') from None
+        print(f'{label} upload accepted with file ID: {file_id}', flush=True)
+
+        mapping_saved = True
+        try:
+            timed_call(f'{label} mapping save', save_mapping, file_id, host)
+        except Exception:
+            mapping_saved = False
+            print(f'::warning::{label} upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.', flush=True)
+        if not mapping_saved:
+            raise DownloadError(f'{label} upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
+
+        verify_accepted_upload(host, file_id, api_key, path.stat().st_size, server_name)
+        print(f'{label} upload completed successfully.', flush=True)
+
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as file:
-            file.write(f'upload_verified=true\nupload_host={active_host}\n')
+            file.write(f'upload_verified=true\nupload_host={primary_host}\n')
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
-            file.write(f'### {label} upload verified\nUpload accepted and mapping saved.\n')
+            hosts_str = ', '.join(('Byse' if h == 'byse' else 'Abyss') for h in target_hosts)
+            file.write(f'### Upload verified for {hosts_str}\nUpload accepted and mapping saved.\n')
 
 
 def complete_upload_one(path, output_name, values, provider='abyss'):
@@ -902,7 +907,7 @@ def main():
     print('CLIXARENA pipeline version 2026.10.20-parallel-preparation', flush=True)
     try:
         values = {name: os.getenv(name, '') for name in
-                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'EARNVIDS_API_KEY', 'VIDHIDE_API_KEY')}
+                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'BYSE_API_KEY', 'FILEMOON_API_KEY')}
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):
@@ -938,14 +943,15 @@ def main():
             required = tuple(name for name in required if name != 'FONT_PATH')
         if method == 'transfer':
             required = ('VIDEO_URL',)
-        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'EARNVIDS_API_KEY', 'VIDHIDE_API_KEY'))
+        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'BYSE_API_KEY', 'FILEMOON_API_KEY'))
         if not sample_only:
             layout_check = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
-            target_host = selected_host(layout_check)
-            if target_host == 'earnvids':
-                required += ('EARNVIDS_API_KEY',)
-            else:
+            all_targets = selected_hosts(layout_check)
+            if 'abyss' in all_targets:
                 required += ('ABYSS_API_KEY',)
+            if 'byse' in all_targets:
+                if not (values.get('BYSE_API_KEY') or values.get('FILEMOON_API_KEY')):
+                    required += ('BYSE_API_KEY',)
         missing = [name for name in required if not values[name].strip()]
         if missing:
             print('::error::Missing required configuration: ' + ', '.join(missing) +
