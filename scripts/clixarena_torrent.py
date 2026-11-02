@@ -451,6 +451,7 @@ def start_runner_torrserver():
                 cmd = p
                 break
     if not cmd:
+        print("::warning::TorrServer binary was not found on runner PATH or /usr/local/bin/torrserver. Check installation step.", flush=True)
         return None
 
     # Check if already responding
@@ -480,9 +481,9 @@ def start_runner_torrserver():
     for _ in range(15):
         time.sleep(1)
         try:
-            req = urllib.request.Request('http://127.0.0.1:8090/echo', headers={'User-Agent': 'ClixArena'})
+            req = urllib.request.Request('http://127.0.0.1:8090/', headers={'User-Agent': 'ClixArena'})
             with urllib.request.urlopen(req, timeout=1) as resp:
-                if resp.status == 200:
+                if resp.status in (200, 301, 302):
                     print("Local TorrServer engine active on port 8090", flush=True)
                     return 'http://127.0.0.1:8090'
         except Exception:
