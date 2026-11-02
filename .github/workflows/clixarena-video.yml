@@ -198,6 +198,7 @@ jobs:
           SEEDR_EMAIL: ${{ secrets.SEEDR_EMAIL }}
           SEEDR_PASSWORD: ${{ secrets.SEEDR_PASSWORD }}
           SEEDR_TOKEN: ${{ secrets.SEEDR_TOKEN }}
+          TORBOX_API_KEY: ${{ secrets.TORBOX_API_KEY }}
         run: python3 -u scripts/clixarena_video.py
       - name: Stage source chunks concurrently
         if: ${{ steps.video.outputs.distributed == 'true' }}
