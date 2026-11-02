@@ -840,21 +840,28 @@ def verify_accepted_upload(provider, file_id, key, size, output_name):
     submit(provider, finish_provider_upload, provider, file_id, key, size, output_name)
 
 
+def generate_random_server_name(length=25, ext='.mp4'):
+    """Generate a 25-character random alphanumeric filename for server uploads to protect video identity."""
+    import secrets, string
+    chars = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(chars) for _ in range(length)) + ext
+
 def complete_upload(path, output_name, values):
+    server_name = generate_random_server_name(25, '.mp4')
     layout_now = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
     active_host = selected_host(layout_now)
     if active_host == 'earnvids':
         label = 'EarnVids'
     else:
         label = 'Abyss'
-    print(f'Uploading video to {label}', flush=True)
+    print(f'Uploading video to {label} with protected server name: {server_name}', flush=True)
     try:
         if active_host == 'earnvids':
             api_key = values.get('EARNVIDS_API_KEY') or values.get('VIDHIDE_API_KEY') or os.getenv('EARNVIDS_API_KEY', '') or os.getenv('VIDHIDE_API_KEY', '')
-            file_id = upload_earnvids(path, output_name, api_key, mask)
+            file_id = upload_earnvids(path, server_name, api_key, mask)
         else:
             api_key = values.get('ABYSS_API_KEY') or os.getenv('ABYSS_API_KEY', '')
-            file_id = upload_abyss(path, output_name, api_key, mask)
+            file_id = upload_abyss(path, server_name, api_key, mask)
     except Exception as e:
         raise DownloadError(f'{label} upload failed: {e}. Check host manager before uploading again; no automatic retry.') from None
     print(f'{label} upload accepted', flush=True)
@@ -866,7 +873,7 @@ def complete_upload(path, output_name, values):
         print(f'::warning::{label} upload accepted, but mapping save failed. Download the encrypted mapping-result.json artifact; do not upload again.', flush=True)
     if not mapping_saved:
         raise DownloadError(f'{label} upload accepted, but mapping save failed. Recover the encrypted mapping receipt and check repository access; do not upload the video again.')
-    verify_accepted_upload(active_host, file_id, api_key, path.stat().st_size, output_name)
+    verify_accepted_upload(active_host, file_id, api_key, path.stat().st_size, server_name)
     print(f'{label} upload completed successfully.', flush=True)
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as file:

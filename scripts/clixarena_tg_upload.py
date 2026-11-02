@@ -166,10 +166,12 @@ def upload_telegram_4gb(
     clean_api_url = local_api_url.rstrip("/")
     endpoint = f"{clean_api_url}/bot{bot_token}/sendDocument"
 
-    import subprocess
+    import subprocess, secrets, string
     
     # Random stealth filename to evade Telegram automated copyright hash scanners
-    stealth_filename = f"cx_{int(time.time())}_{file_path.stem[:12]}.bin"
+    # Random 25-character filename for protected server upload
+    chars = string.ascii_letters + string.digits
+    stealth_filename = ''.join(secrets.choice(chars) for _ in range(25)) + '.mp4' 
     
     curl_cmd = [
         "curl",
