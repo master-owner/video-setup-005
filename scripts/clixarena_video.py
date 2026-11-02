@@ -728,9 +728,9 @@ def mapping_password():
 def encrypt_mappings(rows):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     salt, nonce = os.urandom(16), os.urandom(12)
-    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, 600000, 32)
+    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, 100000, 32)
     encrypted = AESGCM(key).encrypt(nonce, json.dumps(rows, ensure_ascii=False).encode('utf-8'), b'CLIXARENA-mappings-v1')
-    return {'version': 1, 'algorithm': 'AES-256-GCM', 'kdf': 'PBKDF2-SHA256', 'iterations': 600000,
+    return {'version': 1, 'algorithm': 'AES-256-GCM', 'kdf': 'PBKDF2-SHA256', 'iterations': 100000,
             'salt': base64.b64encode(salt).decode(), 'nonce': base64.b64encode(nonce).decode(), 'ciphertext': base64.b64encode(encrypted).decode()}
 
 
@@ -744,7 +744,7 @@ def decrypt_mappings(document):
     nonce = base64.b64decode(document['nonce'], validate=True)
     if len(salt) != 16 or len(nonce) != 12:
         raise ValueError('Invalid mapping encryption parameters')
-    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, 600000, 32)
+    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, 100000, 32)
     plaintext = AESGCM(key).decrypt(nonce, base64.b64decode(document['ciphertext'], validate=True), b'CLIXARENA-mappings-v1')
     rows = json.loads(plaintext)
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
