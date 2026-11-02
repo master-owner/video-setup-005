@@ -502,6 +502,7 @@ def download_via_torrserver(descriptor, target, limit, root, request):
     magnet = descriptor.get('magnet')
     torrent_data_b64 = None
 
+    torrent_raw_bytes = None
     if kind == 'file':
         path = descriptor.get('path', '')
         if not path:
@@ -510,7 +511,7 @@ def download_via_torrserver(descriptor, target, limit, root, request):
         if not fpath.is_file():
             return False
         with open(fpath, 'rb') as f:
-            torrent_data_b64 = base64.b64encode(f.read()).decode('utf-8')
+            torrent_raw_bytes = f.read()
     elif kind == 'magnet':
         if not magnet:
             return False
@@ -519,23 +520,38 @@ def download_via_torrserver(descriptor, target, limit, root, request):
 
     print("Submitting torrent to runner-local TorrServer...", flush=True)
 
-    # 1. Add torrent to TorrServer
-    payload = {
-        'action': 'add',
-        'link': magnet if kind == 'magnet' else None,
-        'torrent': torrent_data_b64 if kind == 'file' else None,
-        'title': 'ClixArena Video',
-        'save_to_db': True
-    }
-    # remove None keys
-    payload = {k: v for k, v in payload.items() if v is not None}
-
-    req = urllib.request.Request(
-        f'{server}/torrents',
-        data=json.dumps(payload).encode('utf-8'),
-        headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
-    )
+    # 1. Add torrent to TorrServer (support both magnet link and binary .torrent upload)
     try:
+        if kind == 'file':
+            boundary = '----ClixArenaBoundary' + uuid.uuid4().hex
+            body = (
+                f'--{boundary}\r\n'
+                f'Content-Disposition: form-data; name="file"; filename="upload.torrent"\r\n'
+                f'Content-Type: application/x-bittorrent\r\n\r\n'
+            ).encode('utf-8') + torrent_raw_bytes + (
+                f'\r\n--{boundary}\r\n'
+                f'Content-Disposition: form-data; name="save"\r\n\r\n'
+                f'true\r\n--{boundary}--\r\n'
+            ).encode('utf-8')
+
+            req = urllib.request.Request(
+                f'{server}/torrent/upload',
+                data=body,
+                headers={'Content-Type': f'multipart/form-data; boundary={boundary}', 'User-Agent': 'ClixArena'}
+            )
+        else:
+            payload = {
+                'action': 'add',
+                'link': magnet,
+                'title': 'ClixArena Video',
+                'save_to_db': True
+            }
+            req = urllib.request.Request(
+                f'{server}/torrents',
+                data=json.dumps(payload).encode('utf-8'),
+                headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
+            )
+
         with urllib.request.urlopen(req, timeout=15) as resp:
             tinfo = json.loads(resp.read().decode('utf-8'))
     except Exception as e:
