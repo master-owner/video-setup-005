@@ -1,10 +1,18 @@
 """Upload providers and backward-compatible mappings.
 Configured strictly for Abyss.to and EarnVids.com (No resolution limits).
+Automatically computes embed_url for both hosts.
 """
 import json, re, subprocess, time, urllib.parse, urllib.request, urllib.error
 from clixarena_upload_metrics import run_upload, file_size
 
 SUPPORTED_HOSTS = ('abyss', 'earnvids')
+
+def get_embed_url(provider, file_id):
+    if provider == 'abyss':
+        return f"https://short.ink/{file_id}"
+    elif provider in ('earnvids', 'vidhide'):
+        return f"https://earnvids.com/e/{file_id}"
+    return None
 
 def selected_host(layout):
     value = layout.get('uploadHost', 'abyss')
@@ -42,24 +50,29 @@ def merge_provider_mapping(rows, identity, file_id, provider='abyss', quality_id
         if isinstance(row.get('providers'), dict):
             providers.update(row['providers'])
         if row.get('abyss_id') and 'abyss' not in providers:
-            providers['abyss'] = {'file_id': row['abyss_id']}
+            providers['abyss'] = {'file_id': row['abyss_id'], 'embed_url': get_embed_url('abyss', row['abyss_id'])}
         if row.get('earnvids_id') and 'earnvids' not in providers:
-            providers['earnvids'] = {'file_id': row['earnvids_id']}
+            providers['earnvids'] = {'file_id': row['earnvids_id'], 'embed_url': get_embed_url('earnvids', row['earnvids_id'])}
         if row.get('vidhide_id') and 'earnvids' not in providers:
-            providers['earnvids'] = {'file_id': row['vidhide_id']}
+            providers['earnvids'] = {'file_id': row['vidhide_id'], 'embed_url': get_embed_url('earnvids', row['vidhide_id'])}
         if row.get('file_id') and row.get('provider') in SUPPORTED_HOSTS and row.get('provider') not in providers:
-            providers[row['provider']] = {'file_id': row['file_id']}
+            providers[row['provider']] = {'file_id': row['file_id'], 'embed_url': get_embed_url(row['provider'], row['file_id'])}
 
-    entry = {'file_id': file_id}
+    embed_url = get_embed_url(provider, file_id)
+    entry = {'file_id': file_id, 'embed_url': embed_url}
     if quality_ids:
         entry['quality_ids'] = quality_ids
     providers[provider] = entry
-    item = dict(identity, provider=provider, providers=providers, file_id=file_id)
+    
+    item = dict(identity, provider=provider, providers=providers, file_id=file_id, embed_url=embed_url)
     if provider == 'abyss':
         item['abyss_id'] = file_id
+        item['abyss_embed_url'] = embed_url
     elif provider == 'earnvids':
         item['earnvids_id'] = file_id
         item['vidhide_id'] = file_id
+        item['earnvids_embed_url'] = embed_url
+        item['vidhide_embed_url'] = embed_url
     return [row for row in rows if not matches(row)] + [item]
 
 def episode_key(identity):
