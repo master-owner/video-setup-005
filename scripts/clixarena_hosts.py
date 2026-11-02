@@ -5,7 +5,7 @@ Automatically computes embed_url for both hosts.
 import json, re, subprocess, time, urllib.parse, urllib.request, urllib.error
 from clixarena_upload_metrics import run_upload, file_size
 
-SUPPORTED_HOSTS = ('abyss', 'earnvids')
+SUPPORTED_HOSTS = ('abyss',)
 
 def get_embed_url(provider, file_id):
     if provider == 'abyss':
@@ -15,7 +15,7 @@ def get_embed_url(provider, file_id):
     return None
 
 def selected_host(layout):
-    value = layout.get('uploadHost', 'abyss')
+    value = 'abyss'
     if value == 'vidhide':
         value = 'earnvids'
     if value not in SUPPORTED_HOSTS:
