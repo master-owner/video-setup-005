@@ -187,6 +187,7 @@ jobs:
           OVERLAY_DURATION: ${{ inputs.overlay_duration }}
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          EARNVIDS_API_KEY: ${{ secrets.EARNVIDS_API_KEY || secrets.VIDHIDE_API_KEY }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           SEEDR_EMAIL: ${{ secrets.SEEDR_EMAIL }}
           SEEDR_PASSWORD: ${{ secrets.SEEDR_PASSWORD }}
@@ -411,6 +412,7 @@ jobs:
           SUBTITLE_PATH: ${{ inputs.subtitle_path }}
           PORTAL_JOB_ID: ${{ inputs.job_id }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          EARNVIDS_API_KEY: ${{ secrets.EARNVIDS_API_KEY || secrets.VIDHIDE_API_KEY }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
         run: python3 -u scripts/clixarena_distributed.py merge
       - name: Mapping receipt

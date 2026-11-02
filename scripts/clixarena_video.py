@@ -30,7 +30,8 @@ from clixarena_features import (settings, subtitle_asset, audio_selection, fetch
 from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
 from clixarena_hosts import (HostError, selected_host, selected_hosts, merge_provider_mapping,
-                             upload_abyss, verify_abyss, upload_streamhg, verify_streamhg)
+                             upload_abyss, verify_abyss, upload_streamhg, verify_streamhg,
+                             upload_earnvids, verify_earnvids)
 
 def download_source(url,target,limit,root):
     descriptor=json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}').get('torrent')
@@ -814,8 +815,15 @@ _UPLOAD_VERIFIER = ContextVar('upload_verifier', default=None)
 
 
 def finish_provider_upload(provider, file_id, key, size, output_name):
-    label = 'StreamHG' if provider == 'streamhg' else 'Abyss'
-    verify = verify_streamhg if provider == 'streamhg' else verify_abyss
+    if provider == 'earnvids':
+        label = 'EarnVids'
+        verify = verify_earnvids
+    elif provider == 'streamhg':
+        label = 'StreamHG'
+        verify = verify_streamhg
+    else:
+        label = 'Abyss'
+        verify = verify_abyss
     verified, named = timed_call(label + ' metadata verification', verify, file_id, key, size, output_name)
     if not verified:
         print('::warning::' + label + ' upload accepted; metadata verification is pending. Check the host manager before uploading again.', flush=True)
@@ -838,10 +846,18 @@ def verify_accepted_upload(provider, file_id, key, size, output_name):
 def complete_upload(path, output_name, values):
     layout_now = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
     active_host = selected_host(layout_now)
-    label = 'StreamHG' if active_host == 'streamhg' else 'Abyss'
+    if active_host == 'earnvids':
+        label = 'EarnVids'
+    elif active_host == 'streamhg':
+        label = 'StreamHG'
+    else:
+        label = 'Abyss'
     print(f'Uploading video to {label}', flush=True)
     try:
-        if active_host == 'streamhg':
+        if active_host == 'earnvids':
+            api_key = values.get('EARNVIDS_API_KEY') or values.get('VIDHIDE_API_KEY') or os.getenv('EARNVIDS_API_KEY', '') or os.getenv('VIDHIDE_API_KEY', '')
+            file_id = upload_earnvids(path, output_name, api_key, mask)
+        elif active_host == 'streamhg':
             api_key = values.get('STREAMHG_API_KEY') or os.getenv('STREAMHG_API_KEY', '')
             file_id = upload_streamhg(path, output_name, api_key, mask)
         else:
@@ -849,7 +865,7 @@ def complete_upload(path, output_name, values):
             file_id = upload_abyss(path, output_name, api_key, mask)
     except Exception as e:
         raise DownloadError(f'{label} upload failed: {e}. Check host manager before uploading again; no automatic retry.') from None
-    print(f'{label} upload accepted ({file_id})', flush=True)
+    print(f'{label} upload accepted', flush=True)
     mapping_saved = True
     try:
         timed_call(f'{label} mapping save', save_mapping, file_id, active_host)
@@ -866,12 +882,6 @@ def complete_upload(path, output_name, values):
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
             file.write(f'### {label} upload verified\nUpload accepted and mapping saved.\n')
-    if os.getenv('GITHUB_OUTPUT'):
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as file:
-            file.write('upload_verified=true\nupload_host=abyss\n')
-    if os.getenv('GITHUB_STEP_SUMMARY'):
-        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
-            file.write('### Abyss upload verified\nUpload accepted and mapping saved.\n')
 
 
 def complete_upload_one(path, output_name, values, provider='abyss'):
@@ -893,7 +903,7 @@ def main():
     print('CLIXARENA pipeline version 2026.10.20-parallel-preparation', flush=True)
     try:
         values = {name: os.getenv(name, '') for name in
-                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'STREAMHG_API_KEY')}
+                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'STREAMHG_API_KEY', 'EARNVIDS_API_KEY', 'VIDHIDE_API_KEY')}
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):

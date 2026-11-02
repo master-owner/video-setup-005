@@ -28,4 +28,5 @@ jobs:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          EARNVIDS_API_KEY: ${{ secrets.EARNVIDS_API_KEY || secrets.VIDHIDE_API_KEY }}
         run: python scripts/keep_alive_videos.py
