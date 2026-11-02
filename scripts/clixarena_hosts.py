@@ -11,7 +11,7 @@ def get_embed_url(provider, file_id):
     if provider == 'abyss':
         return f"https://player.abyssplayer.com/{file_id}"
     elif provider in ('byse', 'filemoon'):
-        return f"https://byse.sx/e/{file_id}"
+        return f"https://bysetayico.com/e/{file_id}"
     return None
 
 def selected_host(layout):
