@@ -32,13 +32,8 @@ def settings():
     layout = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
     upload_host = layout.get('uploadHost', 'abyss')
     
-    # If StreamHG is selected, lock to 720p only (High or Balanced)
-    if upload_host == 'streamhg':
-        if 'High' in quality:
-            quality = '720p - High'
-        else:
-            quality = '720p - Balanced'
-        print('StreamHG upload host active: Enforcing 720p output (' + quality + ')', flush=True)
+    # No host-specific resolution lock
+
 
     if quality not in choices:
         raise ValueError('Unsupported quality choice')

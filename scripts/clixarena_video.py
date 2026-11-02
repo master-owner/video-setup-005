@@ -30,7 +30,7 @@ from clixarena_features import (settings, subtitle_asset, audio_selection, fetch
 from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
 from clixarena_hosts import (HostError, selected_host, selected_hosts, merge_provider_mapping,
-                             upload_abyss, verify_abyss, upload_streamhg, verify_streamhg,
+                             upload_abyss, verify_abyss,
                              upload_earnvids, verify_earnvids)
 
 def download_source(url,target,limit,root):
@@ -818,9 +818,6 @@ def finish_provider_upload(provider, file_id, key, size, output_name):
     if provider == 'earnvids':
         label = 'EarnVids'
         verify = verify_earnvids
-    elif provider == 'streamhg':
-        label = 'StreamHG'
-        verify = verify_streamhg
     else:
         label = 'Abyss'
         verify = verify_abyss
@@ -848,8 +845,6 @@ def complete_upload(path, output_name, values):
     active_host = selected_host(layout_now)
     if active_host == 'earnvids':
         label = 'EarnVids'
-    elif active_host == 'streamhg':
-        label = 'StreamHG'
     else:
         label = 'Abyss'
     print(f'Uploading video to {label}', flush=True)
@@ -857,9 +852,6 @@ def complete_upload(path, output_name, values):
         if active_host == 'earnvids':
             api_key = values.get('EARNVIDS_API_KEY') or values.get('VIDHIDE_API_KEY') or os.getenv('EARNVIDS_API_KEY', '') or os.getenv('VIDHIDE_API_KEY', '')
             file_id = upload_earnvids(path, output_name, api_key, mask)
-        elif active_host == 'streamhg':
-            api_key = values.get('STREAMHG_API_KEY') or os.getenv('STREAMHG_API_KEY', '')
-            file_id = upload_streamhg(path, output_name, api_key, mask)
         else:
             api_key = values.get('ABYSS_API_KEY') or os.getenv('ABYSS_API_KEY', '')
             file_id = upload_abyss(path, output_name, api_key, mask)
@@ -903,7 +895,7 @@ def main():
     print('CLIXARENA pipeline version 2026.10.20-parallel-preparation', flush=True)
     try:
         values = {name: os.getenv(name, '') for name in
-                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'STREAMHG_API_KEY', 'EARNVIDS_API_KEY', 'VIDHIDE_API_KEY')}
+                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'EARNVIDS_API_KEY', 'VIDHIDE_API_KEY')}
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):
@@ -939,12 +931,12 @@ def main():
             required = tuple(name for name in required if name != 'FONT_PATH')
         if method == 'transfer':
             required = ('VIDEO_URL',)
-        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'STREAMHG_API_KEY'))
+        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'EARNVIDS_API_KEY'))
         if not sample_only:
             layout_check = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
             target_host = selected_host(layout_check)
-            if target_host == 'streamhg':
-                required += ('STREAMHG_API_KEY',)
+            if target_host == 'earnvids':
+                required += ('EARNVIDS_API_KEY',)
             else:
                 required += ('ABYSS_API_KEY',)
         missing = [name for name in required if not values[name].strip()]

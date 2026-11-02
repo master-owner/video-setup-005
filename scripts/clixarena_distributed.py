@@ -321,7 +321,6 @@ def merge():
         return
     values = {
         'ABYSS_API_KEY': os.getenv('ABYSS_API_KEY', ''),
-        'STREAMHG_API_KEY': os.getenv('STREAMHG_API_KEY', ''),
         'EARNVIDS_API_KEY': os.getenv('EARNVIDS_API_KEY', '') or os.getenv('VIDHIDE_API_KEY', '')
     }
     for value in values.values(): mask(value)
