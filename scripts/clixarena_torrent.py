@@ -16,7 +16,20 @@ import uuid
 
 class TorrentError(Exception):pass
 VIDEO={'.mkv','.mp4','.webm','.avi','.mov','.m4v','.ts','.m2ts'}
-FALLBACK_TRACKERS=['udp://tracker.opentrackr.org:1337/announce','udp://open.stealth.si:80/announce','udp://tracker.torrent.eu.org:451/announce']
+FALLBACK_TRACKERS=[
+    'udp://tracker.opentrackr.org:1337/announce',
+    'udp://open.stealth.si:80/announce',
+    'udp://tracker.torrent.eu.org:451/announce',
+    'udp://explodie.org:6969/announce',
+    'udp://tracker.openbittorrent.com:80/announce',
+    'udp://opentracker.i2p.rocks:6969/announce',
+    'udp://tracker.cyberia.is:6969/announce',
+    'udp://open.demonii.com:1337/announce',
+    'udp://p4p.arenabg.com:1337/announce',
+    'udp://tracker.moeking.me:6969/announce',
+    'udp://tracker.dler.org:6969/announce',
+    'udp://tracker.srv00.com:6969/announce'
+]
 
 def public_trackers(values,resolver=socket.getaddrinfo):
     result=[]
@@ -451,11 +464,13 @@ def start_runner_torrserver():
 
     db_dir = Path('/tmp/torr_db')
     db_dir.mkdir(parents=True, exist_ok=True)
+    log_file = Path('/tmp/torrserver.log')
     try:
+        log_fd = open(log_file, 'w', encoding='utf-8')
         proc = subprocess.Popen(
             [cmd, '-p', '8090', '-d', str(db_dir)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=log_fd,
+            stderr=subprocess.STDOUT
         )
     except Exception as e:
         print(f"::warning::Failed to launch local TorrServer process ({e})", flush=True)
