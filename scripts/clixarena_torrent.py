@@ -485,6 +485,29 @@ def start_runner_torrserver():
             with urllib.request.urlopen(req, timeout=1) as resp:
                 if resp.status in (200, 301, 302):
                     print("Local TorrServer engine active on port 8090", flush=True)
+                    # Optimize TorrServer settings for maximum network throughput
+                    try:
+                        cfg_payload = {
+                            "action": "set",
+                            "sets": {
+                                "CacheSize": 1073741824,       # 1 GB RAM Cache
+                                "ReaderReadAHead": 95,          # 95% aggressive pre-buffer
+                                "PreloadCache": 10,
+                                "ConnectionsLimit": 250,        # connect to up to 250 peers simultaneously
+                                "DhtConnectionLimit": 500,
+                                "PeersListenPort": 0,
+                                "ResponsiveMode": True
+                            }
+                        }
+                        req_cfg = urllib.request.Request(
+                            'http://127.0.0.1:8090/settings',
+                            data=json.dumps(cfg_payload).encode('utf-8'),
+                            headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
+                        )
+                        urllib.request.urlopen(req_cfg, timeout=3)
+                        print("TorrServer turbo caching & 250-peer limit activated", flush=True)
+                    except Exception:
+                        pass
                     return 'http://127.0.0.1:8090'
         except Exception:
             continue
