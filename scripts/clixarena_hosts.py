@@ -9,7 +9,7 @@ SUPPORTED_HOSTS = ('abyss', 'earnvids')
 
 def get_embed_url(provider, file_id):
     if provider == 'abyss':
-        return f"https://short.ink/{file_id}"
+        return f"https://player.abyssplayer.com/{file_id}"
     elif provider in ('earnvids', 'vidhide'):
         return f"https://earnvids.com/e/{file_id}"
     return None
