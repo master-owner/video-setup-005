@@ -728,7 +728,7 @@ def mapping_password():
 def encrypt_mappings(rows):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     salt, nonce = os.urandom(16), os.urandom(12)
-    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, document.get('iterations', 100000), 32)
+    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, 100000, 32)
     encrypted = AESGCM(key).encrypt(nonce, json.dumps(rows, ensure_ascii=False).encode('utf-8'), b'CLIXARENA-mappings-v1')
     return {'version': 1, 'algorithm': 'AES-256-GCM', 'kdf': 'PBKDF2-SHA256', 'iterations': 100000,
             'salt': base64.b64encode(salt).decode(), 'nonce': base64.b64encode(nonce).decode(), 'ciphertext': base64.b64encode(encrypted).decode()}
@@ -738,13 +738,13 @@ def decrypt_mappings(document):
     if isinstance(document, list):
         return document  # Migrate the current plaintext file on its next update.
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    if not isinstance(document, dict) or document.get('version') != 1 or document.get('algorithm') != 'AES-256-GCM' or document.get('kdf') != 'PBKDF2-SHA256' or (document.get('iterations') != 100000 and (document.get('iterations') != 100000 and document.get('iterations') != 600000)):
+    if not isinstance(document, dict) or document.get('version') != 1 or document.get('algorithm') != 'AES-256-GCM' or document.get('kdf') != 'PBKDF2-SHA256' or (document.get('iterations') not in (100000, 600000)):
         raise ValueError('Invalid encrypted mapping format')
     salt = base64.b64decode(document['salt'], validate=True)
     nonce = base64.b64decode(document['nonce'], validate=True)
     if len(salt) != 16 or len(nonce) != 12:
         raise ValueError('Invalid mapping encryption parameters')
-    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, document.get('iterations', 100000), 32)
+    key = hashlib.pbkdf2_hmac('sha256', mapping_password(), salt, 100000, 32)
     plaintext = AESGCM(key).decrypt(nonce, base64.b64decode(document['ciphertext'], validate=True), b'CLIXARENA-mappings-v1')
     rows = json.loads(plaintext)
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
