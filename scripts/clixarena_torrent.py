@@ -133,13 +133,16 @@ class SeedrClient:
     """Standalone client for official Seedr.cc REST API v1 using HTTP Basic Authentication."""
     BASE_REST = "https://www.seedr.cc/rest"
 
-    def __init__(self, email="", password=""):
+    def __init__(self, email="", password="", token=""):
         self.email = (email or "").strip()
         self.password = (password or "").strip()
-        if not self.email or not self.password:
-            raise TorrentError("Seedr credentials (SEEDR_EMAIL and SEEDR_PASSWORD) are required.")
+        self.token = (token or "").strip()
+        if not self.token and (not self.email or not self.password):
+            raise TorrentError("Seedr credentials (SEEDR_EMAIL and SEEDR_PASSWORD, or SEEDR_TOKEN) are required.")
 
     def _auth_header(self):
+        if self.token:
+            return f"Bearer {self.token}"
         user_pass = f"{self.email}:{self.password}".encode("utf-8")
         b64 = base64.b64encode(user_pass).decode("utf-8")
         return f"Basic {b64}"
@@ -253,7 +256,8 @@ def download_via_seedr(descriptor, target, limit, root, request):
     """Downloads torrent or magnet using Seedr cloud caching and direct high-speed HTTP transfer."""
     email = os.getenv("SEEDR_EMAIL", "").strip()
     password = os.getenv("SEEDR_PASSWORD", "").strip()
-    if not (email and password):
+    token = os.getenv("SEEDR_TOKEN", "").strip()
+    if not (token or (email and password)):
         return False
 
     kind = descriptor.get("kind")
@@ -279,7 +283,7 @@ def download_via_seedr(descriptor, target, limit, root, request):
 
     print("Seedr credentials detected. Attempting high-speed cloud caching via Seedr REST API...", flush=True)
     try:
-        client = SeedrClient(email=email, password=password)
+        client = SeedrClient(email=email, password=password, token=token)
     except Exception as e:
         print(f"::warning::Seedr init failed ({e}). Falling back to libtorrent direct P2P.", flush=True)
         return False
@@ -695,220 +699,13 @@ def download_via_torrserver(descriptor, target, limit, root, request):
         return False
 
 
-def download_via_torbox(descriptor, target, limit, root, request):
-    """Downloads torrent or magnet using TorBox Debrid API with ultra-fast direct HTTPS streaming."""
-    token = os.getenv("TORBOX_API_KEY", "").strip()
-    if not token:
-        return False
-
-    kind = descriptor.get("kind")
-    magnet = descriptor.get("magnet")
-    torrent_bytes = None
-
-    if kind == "file":
-        path = descriptor.get("path", "")
-        if not path:
-            return False
-        fpath = (root / path).resolve()
-        if not fpath.is_file():
-            return False
-        with open(fpath, "rb") as f:
-            torrent_bytes = f.read()
-    elif kind == "magnet":
-        if not magnet:
-            return False
-    else:
-        return False
-
-    print("TorBox API key detected. Attempting high-speed cloud caching via TorBox API...", flush=True)
-
-    # 1. Create Torrent on TorBox
-    api_url = "https://api.torbox.app/v1/api/torrents/createtorrent"
-    boundary = "----ClixArenaTorbox" + uuid.uuid4().hex
-    
-    if kind == "file":
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="upload.torrent"\r\n'
-            f"Content-Type: application/x-bittorrent\r\n\r\n"
-        ).encode("utf-8") + torrent_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
-    else:
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="magnet"\r\n\r\n'
-            f"{magnet}\r\n--{boundary}--\r\n"
-        ).encode("utf-8")
-
-    req = urllib.request.Request(
-        api_url,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": "Mozilla/5.0 ClixArena"
-        }
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"::warning::TorBox createtorrent failed ({e})", flush=True)
-        return False
-
-    if not data.get("success"):
-        print(f"::warning::TorBox createtorrent API error: {data.get('detail') or data.get('error')}", flush=True)
-        return False
-
-    # Get torrent ID or Hash
-    res_data = data.get("data") or {}
-    torrent_id = res_data.get("torrent_id") or res_data.get("id")
-    torrent_hash = res_data.get("hash")
-
-    print(f"TorBox added torrent (ID: {torrent_id}). Checking status & file caching...", flush=True)
-
-    # 2. Poll TorBox mylist for completion and file choices
-    deadline = time.monotonic() + 600  # wait up to 10 minutes
-    completed_item = None
-
-    while time.monotonic() < deadline:
-        time.sleep(3)
-        try:
-            req_list = urllib.request.Request(
-                "https://api.torbox.app/v1/api/torrents/mylist?bypass_cache=true",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "User-Agent": "Mozilla/5.0 ClixArena"
-                }
-            )
-            with urllib.request.urlopen(req_list, timeout=15) as r:
-                list_resp = json.loads(r.read().decode("utf-8"))
-                items = list_resp.get("data") or []
-                for item in items:
-                    if (torrent_id and item.get("id") == torrent_id) or (torrent_hash and item.get("hash", "").lower() == str(torrent_hash).lower()):
-                        # Check if cached or download finished
-                        if item.get("download_finished") and item.get("download_present") and item.get("files"):
-                            completed_item = item
-                            break
-                        if item.get("download_state") in ("completed", "cached") and item.get("files"):
-                            completed_item = item
-                            break
-                        progress = item.get("progress", 0)
-                        speed = item.get("download_speed", 0) / (1024**2)
-                        print(f"TorBox cloud caching: {progress * 100:.1f}% ({speed:.1f} MB/s)", flush=True)
-                if completed_item:
-                    break
-        except Exception:
-            continue
-
-    if not completed_item:
-        print("::warning::TorBox cloud caching timed out or not ready. Falling back...", flush=True)
-        return False
-
-    # 3. Filter supported video files
-    video_exts = {".mkv", ".mp4", ".webm", ".avi", ".mov", ".m4v", ".ts"}
-    file_choices = []
-    for f in completed_item.get("files", []):
-        f_name = f.get("name", "")
-        f_size = f.get("size", 0)
-        ext = Path(f_name).suffix.lower()
-        if ext in video_exts and f_size > 0:
-            file_choices.append({
-                "index": f.get("id"),
-                "name": Path(f_name).name,
-                "bytes": f_size,
-                "raw_file": f
-            })
-
-    if not file_choices:
-        raise TorrentError("TorBox torrent contains no supported video files.")
-
-    # 4. User/portal selection if multi-file
-    if len(file_choices) == 1:
-        selected_file = file_choices[0]
-        print(f"Single video found in TorBox torrent: '{selected_file['name']}'", flush=True)
-    else:
-        print(f"Multiple videos found in TorBox torrent ({len(file_choices)} files). Waiting for portal selection...", flush=True)
-        portal_choices = [{"index": c["index"], "name": c["name"], "bytes": c["bytes"]} for c in file_choices]
-        sel_idx = select_file(portal_choices, request)
-        selected_file = next(c for c in file_choices if c["index"] == sel_idx)
-        print(f"User selected: '{selected_file['name']}'", flush=True)
-
-    size = selected_file["bytes"]
-    if size > limit:
-        raise TorrentError("Selected video exceeds the 12 GB source limit.")
-    if shutil.disk_usage(".").free < size * 2 + 2 * 1024**3:
-        raise TorrentError("Not enough runner space for this video and processing. Select a smaller file.")
-
-    actual_torrent_id = completed_item.get("id")
-    actual_file_id = selected_file["index"]
-
-    # 5. Request direct CDN download link from TorBox
-    reqdl_url = f"https://api.torbox.app/v1/api/torrents/requestdl?token={token}&torrent_id={actual_torrent_id}&file_id={actual_file_id}&redirect=false"
-    req_dl_info = urllib.request.Request(
-        reqdl_url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "Mozilla/5.0 ClixArena"
-        }
-    )
-    with urllib.request.urlopen(req_dl_info, timeout=15) as r:
-        dl_resp = json.loads(r.read().decode("utf-8"))
-        final_dl_url = dl_resp.get("data")
-
-    if not final_dl_url or not isinstance(final_dl_url, str):
-        # Fallback to redirect permalink URL
-        final_dl_url = f"https://api.torbox.app/v1/api/torrents/requestdl?token={token}&torrent_id={actual_torrent_id}&file_id={actual_file_id}&redirect=true"
-
-    print(f"Downloading '{selected_file['name']}' ({size / (1024**2):.1f} MB) at ultra high speed from TorBox CDN...", flush=True)
-
-    # 6. Stream download directly to runner disk
-    target_path = Path(target)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    req_fetch = urllib.request.Request(
-        final_dl_url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "*/*"}
-    )
-    with urllib.request.urlopen(req_fetch, timeout=120) as resp, open(target_path, "wb") as out_f:
-        copied = 0
-        last_dl_log = time.monotonic()
-        while True:
-            chunk = resp.read(2 * 1024 * 1024)
-            if not chunk:
-                break
-            out_f.write(chunk)
-            copied += len(chunk)
-            if time.monotonic() - last_dl_log >= 10:
-                print(f"TorBox CDN transfer: {min(100.0, copied / size * 100):.1f}% ({copied / 1024**2:.1f} MB)", flush=True)
-                last_dl_log = time.monotonic()
-
-    if target_path.stat().st_size != size:
-        raise TorrentError("Downloaded TorBox video size mismatch.")
-
-    print("TorBox high-speed download successfully completed!", flush=True)
-
-    # 7. Clean up torrent from TorBox cloud account to stay within storage limits
-    try:
-        del_req = urllib.request.Request(
-            "https://api.torbox.app/v1/api/torrents/controltorrent",
-            data=json.dumps({"operation": "delete", "torrent_id": actual_torrent_id}).encode("utf-8"),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "ClixArena"}
-        )
-        urllib.request.urlopen(del_req, timeout=5)
-        print("Cleaned up TorBox cloud storage.", flush=True)
-    except Exception:
-        pass
-
-    return True
-
 def download_torrent(descriptor,target,limit,root,request):
-    # 1. PRIMARY: Try TorBox Debrid API (100% ToS-Safe, Ultra-Fast Cloud Caching)
+    # 1. PRIMARY: Try Seedr cloud caching (100% Free, High-Speed CDN transfer, Instant Cache)
     try:
-        if download_via_torbox(descriptor, target, limit, root, request):
+        if download_via_seedr(descriptor, target, limit, root, request):
             return target
     except Exception as e:
-        print(f"::warning::TorBox resolver exception: {e}. Falling back to secondary engine...", flush=True)
+        print(f"::warning::Seedr resolver exception: {e}. Falling back to secondary engine...", flush=True)
 
     # 2. SECONDARY: Try Runner-local TorrServer engine
     try:
@@ -916,13 +713,6 @@ def download_torrent(descriptor,target,limit,root,request):
             return target
     except Exception as e:
         print(f"::warning::TorrServer resolver exception: {e}. Continuing with fallbacks...", flush=True)
-
-    # Try high-speed Seedr cloud caching first if credentials are configured
-    try:
-        if download_via_seedr(descriptor, target, limit, root, request):
-            return target
-    except Exception as e:
-        print(f"::warning::Seedr resolver exception: {e}. Continuing with libtorrent...", flush=True)
 
     try:import libtorrent as lt
     except ImportError:raise TorrentError('libtorrent is missing. Update the Actions workflow and media tools.') from None
