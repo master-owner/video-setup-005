@@ -130,22 +130,54 @@ def prepare(lt,descriptor,root):
     return params
 
 class SeedrClient:
-    """Standalone client for official Seedr.cc REST API v1 using HTTP Basic Authentication."""
+    """Standalone client for official Seedr.cc REST API v1 using Bearer Access Token Authentication."""
     BASE_REST = "https://www.seedr.cc/rest"
 
     def __init__(self, email="", password="", token=""):
         self.email = (email or "").strip()
         self.password = (password or "").strip()
         self.token = (token or "").strip()
-        if not self.token and (not self.email or not self.password):
-            raise TorrentError("Seedr credentials (SEEDR_EMAIL and SEEDR_PASSWORD, or SEEDR_TOKEN) are required.")
+
+        # If token is not explicitly given, fetch one using email/password via OAuth
+        if not self.token:
+            if not self.email or not self.password:
+                raise TorrentError("Seedr credentials (SEEDR_TOKEN, or SEEDR_EMAIL and SEEDR_PASSWORD) are required.")
+            print("Authenticating with Seedr OAuth to obtain Bearer access token...", flush=True)
+            self.token = self._fetch_oauth_token()
+
+    def _fetch_oauth_token(self):
+        try:
+            url = "https://www.seedr.cc/oauth_test/token.php"
+            data = urllib.parse.urlencode({
+                "grant_type": "password",
+                "client_id": "seedr_chrome",
+                "type": "login",
+                "username": self.email,
+                "password": self.password
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"User-Agent": "Mozilla/5.0 ClixArena"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+                tok = res.get("access_token")
+                if not tok:
+                    raise TorrentError(f"Seedr OAuth login returned no access_token: {res}")
+                return tok
+        except urllib.error.HTTPError as e:
+            err_msg = ""
+            try:
+                err_msg = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise TorrentError(f"Seedr OAuth login failed (HTTP {e.code}): {err_msg}")
+        except Exception as e:
+            raise TorrentError(f"Failed to acquire Seedr access token: {e}")
 
     def _auth_header(self):
-        if self.token:
-            return f"Bearer {self.token}"
-        user_pass = f"{self.email}:{self.password}".encode("utf-8")
-        b64 = base64.b64encode(user_pass).decode("utf-8")
-        return f"Basic {b64}"
+        return f"Bearer {self.token}"
 
     def request(self, endpoint, method="GET", data=None, files=None):
         url = f"{self.BASE_REST}/{endpoint.lstrip('/')}"
