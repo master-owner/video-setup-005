@@ -261,28 +261,42 @@ class SeedrClient:
             print(f"::warning::Seedr cleanup failed for file {file_id}: {e}", flush=True)
             return None
 
-    def get_file_download_url(self, file_id):
-        """Resolves the 302 redirect from /rest/file/{id} to get the direct CDN download URL."""
-        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
+    def download_file_stream(self, file_id, target_path, expected_size):
+        """Downloads file directly from Seedr preserving Bearer Authorization across CDN redirects."""
         url = f"{self.BASE_REST}/file/{file_id}"
-        opener = urllib.request.build_opener(NoRedirectHandler)
+        auth = self._auth_header()
+
+        class AuthRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                m = super().redirect_request(req, fp, code, msg, headers, newurl)
+                if m:
+                    m.add_unredirected_header("Authorization", auth)
+                    m.add_header("Authorization", auth)
+                return m
+
+        opener = urllib.request.build_opener(AuthRedirectHandler)
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Authorization": self._auth_header(),
+            "Authorization": auth,
+            "Accept": "*/*",
         })
-        try:
-            resp = opener.open(req)
-            # If server returned 200 directly with url or data
-            return resp.geturl()
-        except urllib.error.HTTPError as e:
-            if e.code in (301, 302, 303, 307, 308):
-                location = e.headers.get("Location")
-                if location:
-                    return location
-            raise TorrentError(f"Seedr failed to retrieve file download link (HTTP {e.code}: {e.reason})")
+
+        with opener.open(req, timeout=120) as resp, open(target_path, "wb") as out_f:
+            copied = 0
+            last_dl_log = time.monotonic()
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+                copied += len(chunk)
+                if time.monotonic() - last_dl_log >= 10:
+                    prog = (copied / expected_size * 100) if expected_size > 0 else 0
+                    print(f"Seedr CDN transfer {min(100.0, prog):.1f}% ({copied / 1024**2:.1f} MB)", flush=True)
+                    last_dl_log = time.monotonic()
+
+        if target_path.stat().st_size != expected_size:
+            raise TorrentError(f"Downloaded Seedr video size mismatch (expected {expected_size}, got {target_path.stat().st_size}).")
 
 def download_via_seedr(descriptor, target, limit, root, request):
     """Downloads torrent or magnet using Seedr cloud caching and direct high-speed HTTP transfer."""
@@ -433,7 +447,6 @@ def download_via_seedr(descriptor, target, limit, root, request):
 
         raw = selected_file["raw_file"]
         file_id = raw.get("id")
-        download_url = client.get_file_download_url(file_id)
 
         print(f"Downloading '{selected_file['name']}' ({size / (1024**2):.1f} MB) at high speed from Seedr CDN...", flush=True)
 
@@ -441,26 +454,7 @@ def download_via_seedr(descriptor, target, limit, root, request):
         target_path = Path(target)
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        req_dl = urllib.request.Request(download_url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept": "*/*",
-        })
-        with urllib.request.urlopen(req_dl, timeout=120) as resp, open(target_path, "wb") as out_f:
-            copied = 0
-            last_dl_log = time.monotonic()
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                out_f.write(chunk)
-                copied += len(chunk)
-                if time.monotonic() - last_dl_log >= 10:
-                    print(f"Seedr CDN transfer {min(100.0, copied / size * 100):.1f}% ({copied / 1024**2:.1f} MB)", flush=True)
-                    last_dl_log = time.monotonic()
-
-        if target_path.stat().st_size != size:
-            raise TorrentError("Downloaded Seedr video size mismatch.")
-
+        client.download_file_stream(file_id, target_path, size)
         print("Seedr high-speed download successfully completed!", flush=True)
 
         # Step 6: Cleanup from Seedr cloud storage to keep 2GB free storage available
