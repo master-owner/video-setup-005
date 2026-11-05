@@ -520,11 +520,11 @@ def start_runner_torrserver():
                         cfg_payload = {
                             "action": "set",
                             "sets": {
-                                "CacheSize": 1073741824,       # 1 GB RAM Cache
+                                "CacheSize": 2684354560,       # 2.5 GB RAM Cache (Ultra-Fast in-memory buffering)
                                 "ReaderReadAHead": 95,          # 95% aggressive pre-buffer
-                                "PreloadCache": 10,
-                                "ConnectionsLimit": 250,        # connect to up to 250 peers simultaneously
-                                "DhtConnectionLimit": 500,
+                                "PreloadCache": 15,
+                                "ConnectionsLimit": 350,        # connect to up to 350 peers simultaneously
+                                "DhtConnectionLimit": 800,
                                 "PeersListenPort": 0,
                                 "ResponsiveMode": True
                             }
@@ -726,19 +726,19 @@ def download_via_torrserver(descriptor, target, limit, root, request):
 
 
 def download_torrent(descriptor,target,limit,root,request):
-    # 1. PRIMARY: Try Seedr cloud caching (100% Free, High-Speed CDN transfer, Instant Cache)
-    try:
-        if download_via_seedr(descriptor, target, limit, root, request):
-            return target
-    except Exception as e:
-        print(f"::warning::Seedr resolver exception: {e}. Falling back to secondary engine...", flush=True)
-
-    # 2. SECONDARY: Try Runner-local TorrServer engine
+    # 1. PRIMARY: Try Runner-local TorrServer engine (Ultra-fast 2.5GB RAM cache, multi-peer DHT streaming)
     try:
         if download_via_torrserver(descriptor, target, limit, root, request):
             return target
     except Exception as e:
-        print(f"::warning::TorrServer resolver exception: {e}. Continuing with fallbacks...", flush=True)
+        print(f"::warning::TorrServer resolver exception: {e}. Falling back to cloud resolver...", flush=True)
+
+    # 2. SECONDARY: Try Seedr cloud caching fallback
+    try:
+        if download_via_seedr(descriptor, target, limit, root, request):
+            return target
+    except Exception as e:
+        print(f"::warning::Seedr resolver exception: {e}. Continuing with libtorrent fallback...", flush=True)
 
     try:import libtorrent as lt
     except ImportError:raise TorrentError('libtorrent is missing. Update the Actions workflow and media tools.') from None
