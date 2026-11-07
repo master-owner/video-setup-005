@@ -158,9 +158,11 @@ jobs:
           if ! python3 -c "import libtorrent" 2>/dev/null; then
             sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent
           fi
-          if ! command -v qbittorrent-nox >/dev/null; then
-            echo "Installing qbittorrent-nox headless engine..."
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends qbittorrent-nox || true
+          if ! command -v torrserver >/dev/null; then
+            echo "Installing TorrServer engine..."
+            curl -sL --connect-timeout 15 --max-time 60 https://github.com/YouROK/TorrServer/releases/download/MatriX.148/TorrServer-linux-amd64 -o /tmp/torrserver
+            chmod +x /tmp/torrserver
+            sudo mv /tmp/torrserver /usr/local/bin/torrserver || true
           fi
       - name: Download, validate, encode and upload
         id: video
