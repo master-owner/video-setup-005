@@ -14,7 +14,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     python3 \
     python3-cryptography \
     python3-libtorrent \
-    && apt-get install -y --no-install-recommends aria2 \
+    && apt-get install -y --no-install-recommends qbittorrent-nox \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /github/workspace

@@ -471,23 +471,94 @@ def download_via_seedr(descriptor, target, limit, root, request):
         return False
 
 
-def download_via_aria2(descriptor, target, limit, root, request):
-    """Downloads torrent or magnet using high-speed multi-connection aria2c engine."""
+def start_runner_qbittorrent():
+    """Starts qbittorrent-nox on localhost:8080 with WebUI auth bypassed for localhost."""
     import subprocess
-    cmd_bin = shutil.which('aria2c') or shutil.which('/usr/local/bin/aria2c') or shutil.which('/usr/bin/aria2c')
+    cmd_bin = shutil.which('qbittorrent-nox') or shutil.which('/usr/bin/qbittorrent-nox') or shutil.which('/usr/local/bin/qbittorrent-nox')
     if not cmd_bin:
-        for candidate in ['/usr/local/bin/aria2c', '/usr/bin/aria2c', 'aria2c']:
+        for candidate in ['/usr/bin/qbittorrent-nox', '/usr/local/bin/qbittorrent-nox', 'qbittorrent-nox']:
             if Path(candidate).is_file() and os.access(candidate, os.X_OK):
                 cmd_bin = candidate
                 break
     if not cmd_bin:
-        print("::warning::aria2c binary was not found on runner PATH. Check installation step.", flush=True)
+        print("::warning::qbittorrent-nox binary was not found on runner PATH.", flush=True)
+        return None
+
+    # Check if already running and responding
+    try:
+        req = urllib.request.Request('http://127.0.0.1:8080/api/v2/app/version', headers={'User-Agent': 'ClixArena'})
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            if resp.status == 200:
+                return 'http://127.0.0.1:8080'
+    except Exception:
+        pass
+
+    # Configure qBittorrent config file to allow localhost WebUI without authentication
+    conf_dir = Path.home() / '.config' / 'qBittorrent'
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    conf_file = conf_dir / 'qBittorrent.conf'
+    conf_lines = [
+        "[BitTorrent]",
+        "Session\\DefaultSavePath=/tmp/qbit_downloads",
+        "Session\\TempPath=/tmp/qbit_downloads",
+        "Session\\GlobalMaxConns=500",
+        "Session\\GlobalMaxUploads=5",
+        "Session\\GlobalMaxDownloadRate=0",
+        "Session\\GlobalMaxUploadRate=50",
+        "Session\\Port=6881",
+        "Session\\DHTEnabled=true",
+        "Session\\PeXEnabled=true",
+        "Session\\LSDEnabled=true",
+        "",
+        "[Preferences]",
+        "WebUI\\AuthSubnetWhitelist=127.0.0.1/32",
+        "WebUI\\AuthSubnetWhitelistEnabled=true",
+        "WebUI\\LocalHostAuth=false",
+        "WebUI\\Port=8080",
+        "WebUI\\UseUPnP=false",
+        ""
+    ]
+    try:
+        conf_file.write_text('\n'.join(conf_lines), encoding='utf-8')
+    except Exception:
+        pass
+
+    # Launch qbittorrent-nox in daemon mode
+    try:
+        subprocess.Popen(
+            [cmd_bin, '--webui-port=8080'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    except Exception as e:
+        print(f"::warning::Failed to launch qbittorrent-nox ({e})", flush=True)
+        return None
+
+    # Wait up to 15 seconds for WebUI to be ready
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            req = urllib.request.Request('http://127.0.0.1:8080/api/v2/app/version', headers={'User-Agent': 'ClixArena'})
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                if resp.status == 200:
+                    print("qbittorrent-nox daemon active on port 8080", flush=True)
+                    return 'http://127.0.0.1:8080'
+        except Exception:
+            continue
+
+    print("::warning::qbittorrent-nox failed to initialize WebUI within 15s.", flush=True)
+    return None
+
+
+def download_via_qbittorrent(descriptor, target, limit, root, request):
+    """Downloads torrent using high-performance qbittorrent-nox daemon via Web API v2."""
+    server = start_runner_qbittorrent()
+    if not server:
         return False
 
     kind = descriptor.get('kind')
     magnet = descriptor.get('magnet')
-    torrent_source = None
-    torrent_file_path = None
+    torrent_file_bytes = None
 
     if kind == 'file':
         path = descriptor.get('path', '')
@@ -496,114 +567,215 @@ def download_via_aria2(descriptor, target, limit, root, request):
         fpath = (root / path).resolve()
         if not fpath.is_file():
             return False
-        torrent_source = str(fpath)
-        torrent_file_path = fpath
+        torrent_file_bytes = fpath.read_bytes()
     elif kind == 'magnet':
         if not magnet:
             return False
-        torrent_source = magnet
     else:
         return False
 
-    work_dir = Path('.aria2-payload').resolve()
-    if work_dir.exists():
-        shutil.rmtree(work_dir, ignore_errors=True)
-    work_dir.mkdir(parents=True, exist_ok=True)
+    save_path = Path('/tmp/qbit_downloads').resolve()
+    save_path.mkdir(parents=True, exist_ok=True)
 
-    print("Launching high-speed aria2c engine...", flush=True)
+    print("Submitting torrent to qbittorrent-nox engine...", flush=True)
 
-    # If we have a .torrent file, parse candidate files using libtorrent or bencode
-    selected_index = None
-    if torrent_file_path:
-        try:
-            import libtorrent as lt
-            meta = lt.bdecode(torrent_file_path.read_bytes())
-            ti = lt.torrent_info(meta)
-            choices = candidates(ti)
-            if choices:
-                if len(choices) == 1:
-                    selected_index = choices[0]['index']
-                    print(f"Single video found in torrent: '{choices[0]['name']}' (index {selected_index})", flush=True)
-                else:
-                    print(f"Multiple videos found in torrent ({len(choices)} files). Waiting for portal selection...", flush=True)
-                    portal_choices = [{'index': c['index'], 'name': c['name'], 'bytes': c['bytes']} for c in choices]
-                    selected_index = select_file(portal_choices, request)
-                    chosen = next(c for c in choices if c['index'] == selected_index)
-                    print(f"User selected: '{chosen['name']}' (index {selected_index})", flush=True)
-        except Exception as e:
-            print(f"::warning::Failed to pre-select file from .torrent ({e})", flush=True)
-
-    cmd = [
-        cmd_bin,
-        "--seed-time=0",
-        "--max-connection-per-server=16",
-        "--split=16",
-        "--min-split-size=1M",
-        "--file-allocation=none",
-        "--max-overall-upload-limit=1K",
-        "--bt-stop-timeout=180",
-        "--summary-interval=10",
-        "--dir", str(work_dir)
-    ]
-
-    # aria2 file indexing is 1-based, libtorrent is 0-based
-    if selected_index is not None:
-        aria2_idx = selected_index + 1
-        cmd.append(f"--select-file={aria2_idx}")
-
-    if kind == 'file':
-        cmd.extend(["-T", torrent_source])
-    else:
-        cmd.append(torrent_source)
-
+    # 1. Add torrent to qBittorrent via multipart/form-data
     try:
-        proc = subprocess.run(cmd, timeout=3600)
-        if proc.returncode != 0:
-            print(f"::warning::aria2c exited with code {proc.returncode}. Retrying with libtorrent...", flush=True)
-            return False
-    except subprocess.TimeoutExpired:
-        print("::warning::aria2c download timed out after 60 minutes. Retrying with libtorrent...", flush=True)
-        return False
+        boundary = '----ClixArenaQbit' + uuid.uuid4().hex
+        body_bytes = bytearray()
+
+        fields = {
+            'savepath': str(save_path),
+            'autoTMM': 'false',
+            'sequentialDownload': 'false',
+            'firstLastPiecePrio': 'true'
+        }
+        for k, v in fields.items():
+            part = f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
+            body_bytes.extend(part.encode('utf-8'))
+
+        if kind == 'file':
+            header = f'--{boundary}\r\nContent-Disposition: form-data; name="torrents"; filename="upload.torrent"\r\nContent-Type: application/x-bittorrent\r\n\r\n'
+            body_bytes.extend(header.encode('utf-8'))
+            body_bytes.extend(torrent_file_bytes)
+            body_bytes.extend(b'\r\n')
+        else:
+            part = f'--{boundary}\r\nContent-Disposition: form-data; name="urls"\r\n\r\n{magnet}\r\n'
+            body_bytes.extend(part.encode('utf-8'))
+
+        body_bytes.extend(f'--{boundary}--\r\n'.encode('utf-8'))
+
+        req_add = urllib.request.Request(
+            f'{server}/api/v2/torrents/add',
+            data=bytes(body_bytes),
+            headers={'Content-Type': f'multipart/form-data; boundary={boundary}', 'User-Agent': 'ClixArena'}
+        )
+        with urllib.request.urlopen(req_add, timeout=15) as resp:
+            pass
     except Exception as e:
-        print(f"::warning::aria2c execution failed ({e}). Retrying with libtorrent...", flush=True)
+        print(f"::warning::Failed to add torrent to qbittorrent-nox ({e})", flush=True)
         return False
 
-    # Find the downloaded video file in work_dir
-    found_videos = []
-    for f in work_dir.rglob('*'):
-        if f.is_file() and not f.is_symlink():
-            if f.suffix.lower() in VIDEO and f.stat().st_size > 0:
-                found_videos.append(f)
+    # 2. Discover torrent hash from list
+    torr_hash = None
+    deadline_find = time.monotonic() + 30
+    while time.monotonic() < deadline_find:
+        time.sleep(1)
+        try:
+            req_info = urllib.request.Request(f'{server}/api/v2/torrents/info', headers={'User-Agent': 'ClixArena'})
+            with urllib.request.urlopen(req_info, timeout=5) as r:
+                t_list = json.loads(r.read().decode('utf-8'))
+                if t_list:
+                    torr_hash = t_list[0].get('hash')
+                    break
+        except Exception:
+            continue
 
-    if not found_videos:
-        print("::warning::No video files found in aria2c output directory. Falling back to libtorrent...", flush=True)
+    if not torr_hash:
+        print("::warning::qbittorrent-nox did not register the torrent hash.", flush=True)
         return False
 
-    # Sort largest first
-    found_videos.sort(key=lambda x: x.stat().st_size, reverse=True)
-    best_file = found_videos[0]
-    file_size = best_file.stat().st_size
+    print(f"qbittorrent-nox tracking hash: {torr_hash}. Waiting for metadata & files...", flush=True)
 
-    if file_size > limit:
+    # 3. Wait for metadata / file list
+    deadline_meta = time.monotonic() + 300
+    files_list = []
+    while time.monotonic() < deadline_meta:
+        time.sleep(2)
+        try:
+            req_files = urllib.request.Request(f'{server}/api/v2/torrents/files?hash={torr_hash}', headers={'User-Agent': 'ClixArena'})
+            with urllib.request.urlopen(req_files, timeout=10) as r:
+                files_list = json.loads(r.read().decode('utf-8'))
+                if files_list and len(files_list) > 0:
+                    break
+        except Exception:
+            continue
+
+    if not files_list:
+        print("::warning::qbittorrent-nox metadata resolution timed out.", flush=True)
+        return False
+
+    # 4. Filter candidate video files
+    video_choices = []
+    for f in files_list:
+        idx = f.get('index')
+        fname = f.get('name', '')
+        size = f.get('size', 0)
+        ext = Path(fname).suffix.lower()
+        if ext in VIDEO and size > 0:
+            clean_name = Path(fname).name
+            video_choices.append({'index': idx, 'name': clean_name, 'bytes': size, 'raw_file': f})
+
+    if not video_choices:
+        raise TorrentError("Torrent contains no supported video files.")
+
+    # Selection
+    if len(video_choices) == 1:
+        chosen = video_choices[0]
+        print(f"Single video found in torrent: '{chosen['name']}'", flush=True)
+    else:
+        print(f"Multiple videos found in torrent ({len(video_choices)} files). Waiting for portal selection...", flush=True)
+        portal_choices = [{'index': c['index'], 'name': c['name'], 'bytes': c['bytes']} for c in video_choices]
+        sel_idx = select_file(portal_choices, request)
+        chosen = next(c for c in video_choices if c['index'] == sel_idx)
+        print(f"User selected: '{chosen['name']}'", flush=True)
+
+    size = chosen['bytes']
+    if size > limit:
         raise TorrentError("Selected video exceeds the 12 GB source limit.")
-    if shutil.disk_usage(".").free < file_size * 2 + 2 * 1024**3:
+    if shutil.disk_usage(".").free < size * 2 + 2 * 1024**3:
         raise TorrentError("Not enough runner space for this video and processing. Select a smaller file.")
+
+    # Prioritize only chosen file: priority=0 for others, priority=7 for selected
+    try:
+        other_indices = '|'.join(str(f['index']) for f in files_list if f['index'] != chosen['index'])
+        if other_indices:
+            data_ignore = urllib.parse.urlencode({'hash': torr_hash, 'id': other_indices, 'priority': '0'}).encode('utf-8')
+            req_ignore = urllib.request.Request(f'{server}/api/v2/torrents/filePrio', data=data_ignore, headers={'User-Agent': 'ClixArena'})
+            urllib.request.urlopen(req_ignore, timeout=5)
+
+        data_prio = urllib.parse.urlencode({'hash': torr_hash, 'id': str(chosen['index']), 'priority': '7'}).encode('utf-8')
+        req_prio = urllib.request.Request(f'{server}/api/v2/torrents/filePrio', data=data_prio, headers={'User-Agent': 'ClixArena'})
+        urllib.request.urlopen(req_prio, timeout=5)
+    except Exception as e:
+        print(f"::warning::Failed to set file priorities in qbittorrent-nox ({e})", flush=True)
+
+    # 5. Monitor download progress
+    print(f"Downloading '{chosen['name']}' ({size / (1024**2):.1f} MB) via qbittorrent-nox high-speed engine...", flush=True)
+    started = time.monotonic()
+    last_log = started
+    dl_timeout = 7200
+
+    while True:
+        time.sleep(2)
+        try:
+            req_stat = urllib.request.Request(f'{server}/api/v2/torrents/info?hashes={torr_hash}', headers={'User-Agent': 'ClixArena'})
+            with urllib.request.urlopen(req_stat, timeout=5) as r:
+                info_list = json.loads(r.read().decode('utf-8'))
+                if not info_list:
+                    continue
+                ti = info_list[0]
+                dl_speed = ti.get('dlspeed', 0) / (1024**2)
+                peers = ti.get('num_peers', 0)
+                seeds = ti.get('num_seeds', 0)
+                state = ti.get('state', '')
+
+                # Check specific file progress
+                req_f = urllib.request.Request(f'{server}/api/v2/torrents/files?hash={torr_hash}', headers={'User-Agent': 'ClixArena'})
+                with urllib.request.urlopen(req_f, timeout=5) as rf:
+                    f_stats = json.loads(rf.read().decode('utf-8'))
+                    chosen_stat = next((item for item in f_stats if item.get('index') == chosen['index']), None)
+                    if chosen_stat:
+                        f_prog = chosen_stat.get('progress', 0) * 100
+                        now = time.monotonic()
+                        if now - last_log >= 10:
+                            print(f"qBittorrent download {f_prog:.1f}% | {dl_speed:.2f} MiB/s | peers: {peers} (seeds: {seeds}) | state: {state}", flush=True)
+                            last_log = now
+
+                        if chosen_stat.get('progress', 0) >= 1.0:
+                            print(f"qBittorrent file complete: '{chosen['name']}'!", flush=True)
+                            break
+        except Exception:
+            continue
+
+        if time.monotonic() - started > dl_timeout:
+            raise TorrentError("qBittorrent download exceeded the 2-hour limit.")
+
+    # 6. Locate completed file on disk
+    downloaded_path = None
+    for f_disk in save_path.rglob('*'):
+        if f_disk.is_file() and not f_disk.is_symlink():
+            if f_disk.name == chosen['name'] or f_disk.stat().st_size == size:
+                downloaded_path = f_disk
+                break
+
+    if not downloaded_path or downloaded_path.stat().st_size != size:
+        print("::warning::Could not locate exact completed file from qbittorrent-nox. Falling back...", flush=True)
+        return False
 
     target_path = Path(target)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(best_file), str(target_path))
-    shutil.rmtree(work_dir, ignore_errors=True)
-    print(f"aria2c download successfully completed: {target_path.name} ({file_size / (1024**2):.1f} MB)", flush=True)
+    shutil.move(str(downloaded_path), str(target_path))
+
+    # 7. Cleanup torrent from qBittorrent session
+    try:
+        data_del = urllib.parse.urlencode({'hashes': torr_hash, 'deleteFiles': 'true'}).encode('utf-8')
+        req_del = urllib.request.Request(f'{server}/api/v2/torrents/delete', data=data_del, headers={'User-Agent': 'ClixArena'})
+        urllib.request.urlopen(req_del, timeout=5)
+    except Exception:
+        pass
+
+    print(f"qbittorrent-nox download successfully finished: {target_path.name} ({size / (1024**2):.1f} MB)", flush=True)
     return True
 
 
 def download_torrent(descriptor,target,limit,root,request):
-    # 1. PRIMARY: Try high-speed aria2c engine (16-split multi-connection)
+    # 1. PRIMARY: Try qbittorrent-nox engine (Industry-leading libtorrent-rasterbar core, ultra-fast peer discovery)
     try:
-        if download_via_aria2(descriptor, target, limit, root, request):
+        if download_via_qbittorrent(descriptor, target, limit, root, request):
             return target
     except Exception as e:
-        print(f"::warning::aria2c resolver exception: {e}. Falling back to cloud resolver...", flush=True)
+        print(f"::warning::qbittorrent-nox resolver exception: {e}. Falling back to cloud resolver...", flush=True)
 
     # 2. SECONDARY: Try Seedr cloud caching fallback
     try:

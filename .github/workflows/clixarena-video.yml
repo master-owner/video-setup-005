@@ -158,9 +158,9 @@ jobs:
           if ! python3 -c "import libtorrent" 2>/dev/null; then
             sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent
           fi
-          if ! command -v aria2c >/dev/null; then
-            echo "Installing aria2c high-speed engine..."
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2 || true
+          if ! command -v qbittorrent-nox >/dev/null; then
+            echo "Installing qbittorrent-nox headless engine..."
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends qbittorrent-nox || true
           fi
       - name: Download, validate, encode and upload
         id: video

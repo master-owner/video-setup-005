@@ -156,9 +156,9 @@ jobs:
           echo "Pre-built GHCR Container active: Zero download delay!"
           ffmpeg -version | head -n 1
           python3 -c "import pyrogram, tgcrypto, libtorrent; print('All libraries pre-installed and ready.')"
-          if ! command -v aria2c >/dev/null; then
-            echo "Installing aria2c high-speed engine..."
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2 || true
+          if ! command -v qbittorrent-nox >/dev/null; then
+            echo "Installing qbittorrent-nox headless engine..."
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends qbittorrent-nox || true
           fi
       - name: Download, validate, encode and upload
         id: video
