@@ -156,11 +156,10 @@ jobs:
           echo "Pre-built GHCR Container active: Zero download delay!"
           ffmpeg -version | head -n 1
           python3 -c "import pyrogram, tgcrypto, libtorrent; print('All libraries pre-installed and ready.')"
-          if ! command -v torrserver >/dev/null; then
-            echo "Installing TorrServer fallback in runner container..."
-            curl -sL --connect-timeout 15 --max-time 60 https://github.com/YouROK/TorrServer/releases/download/MatriX.148/TorrServer-linux-amd64 -o /usr/local/bin/torrserver || true
-            chmod +x /usr/local/bin/torrserver 2>/dev/null || true
-          fi 
+          if ! command -v aria2c >/dev/null; then
+            echo "Installing aria2c high-speed engine..."
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2 || true
+          fi
       - name: Download, validate, encode and upload
         id: video
         env:

@@ -158,11 +158,9 @@ jobs:
           if ! python3 -c "import libtorrent" 2>/dev/null; then
             sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-libtorrent
           fi
-          if ! command -v torrserver >/dev/null; then
-            echo "Installing TorrServer engine..."
-            curl -sL --connect-timeout 15 --max-time 60 https://github.com/YouROK/TorrServer/releases/download/MatriX.148/TorrServer-linux-amd64 -o /tmp/torrserver
-            chmod +x /tmp/torrserver
-            sudo mv /tmp/torrserver /usr/local/bin/torrserver || true
+          if ! command -v aria2c >/dev/null; then
+            echo "Installing aria2c high-speed engine..."
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2 || true
           fi
       - name: Download, validate, encode and upload
         id: video

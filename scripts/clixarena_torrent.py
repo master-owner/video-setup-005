@@ -471,91 +471,24 @@ def download_via_seedr(descriptor, target, limit, root, request):
         return False
 
 
-def start_runner_torrserver():
-    """Starts TorrServer on localhost:8090 if binary is present and not already running."""
+def download_via_aria2(descriptor, target, limit, root, request):
+    """Downloads torrent or magnet using high-speed multi-connection aria2c engine."""
     import subprocess
-    cmd = shutil.which('torrserver') or shutil.which('/usr/local/bin/torrserver') or shutil.which('/tmp/torrserver')
-    if not cmd:
-        for p in ['/usr/local/bin/torrserver', '/tmp/torrserver', 'torrserver']:
-            if Path(p).is_file() and os.access(p, os.X_OK):
-                cmd = p
+    cmd_bin = shutil.which('aria2c') or shutil.which('/usr/local/bin/aria2c') or shutil.which('/usr/bin/aria2c')
+    if not cmd_bin:
+        for candidate in ['/usr/local/bin/aria2c', '/usr/bin/aria2c', 'aria2c']:
+            if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+                cmd_bin = candidate
                 break
-    if not cmd:
-        print("::warning::TorrServer binary was not found on runner PATH or /usr/local/bin/torrserver. Check installation step.", flush=True)
-        return None
-
-    # Check if already responding
-    try:
-        req = urllib.request.Request('http://127.0.0.1:8090/echo', headers={'User-Agent': 'ClixArena'})
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            if resp.status == 200:
-                return 'http://127.0.0.1:8090'
-    except Exception:
-        pass
-
-    db_dir = Path('/tmp/torr_db')
-    db_dir.mkdir(parents=True, exist_ok=True)
-    log_file = Path('/tmp/torrserver.log')
-    try:
-        log_fd = open(log_file, 'w', encoding='utf-8')
-        proc = subprocess.Popen(
-            [cmd, '-p', '8090', '-d', str(db_dir)],
-            stdout=log_fd,
-            stderr=subprocess.STDOUT
-        )
-    except Exception as e:
-        print(f"::warning::Failed to launch local TorrServer process ({e})", flush=True)
-        return None
-
-    # Wait for server to come online
-    for _ in range(15):
-        time.sleep(1)
-        try:
-            req = urllib.request.Request('http://127.0.0.1:8090/', headers={'User-Agent': 'ClixArena'})
-            with urllib.request.urlopen(req, timeout=1) as resp:
-                if resp.status in (200, 301, 302):
-                    print("Local TorrServer engine active on port 8090", flush=True)
-                    # Optimize TorrServer settings for maximum network throughput
-                    try:
-                        cfg_payload = {
-                            "action": "set",
-                            "sets": {
-                                "CacheSize": 2684354560,       # 2.5 GB RAM Cache (Ultra-Fast in-memory buffering)
-                                "ReaderReadAHead": 95,          # 95% aggressive pre-buffer
-                                "PreloadCache": 15,
-                                "ConnectionsLimit": 350,        # connect to up to 350 peers simultaneously
-                                "DhtConnectionLimit": 800,
-                                "PeersListenPort": 0,
-                                "ResponsiveMode": True
-                            }
-                        }
-                        req_cfg = urllib.request.Request(
-                            'http://127.0.0.1:8090/settings',
-                            data=json.dumps(cfg_payload).encode('utf-8'),
-                            headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
-                        )
-                        urllib.request.urlopen(req_cfg, timeout=3)
-                        print("TorrServer turbo caching & 250-peer limit activated", flush=True)
-                    except Exception:
-                        pass
-                    return 'http://127.0.0.1:8090'
-        except Exception:
-            continue
-
-    return None
-
-
-def download_via_torrserver(descriptor, target, limit, root, request):
-    """Downloads torrent video using local TorrServer runner engine with direct HTTP streaming."""
-    server = start_runner_torrserver()
-    if not server:
+    if not cmd_bin:
+        print("::warning::aria2c binary was not found on runner PATH. Check installation step.", flush=True)
         return False
 
     kind = descriptor.get('kind')
     magnet = descriptor.get('magnet')
-    torrent_data_b64 = None
+    torrent_source = None
+    torrent_file_path = None
 
-    torrent_raw_bytes = None
     if kind == 'file':
         path = descriptor.get('path', '')
         if not path:
@@ -563,175 +496,114 @@ def download_via_torrserver(descriptor, target, limit, root, request):
         fpath = (root / path).resolve()
         if not fpath.is_file():
             return False
-        with open(fpath, 'rb') as f:
-            torrent_raw_bytes = f.read()
+        torrent_source = str(fpath)
+        torrent_file_path = fpath
     elif kind == 'magnet':
         if not magnet:
             return False
+        torrent_source = magnet
     else:
         return False
 
-    print("Submitting torrent to runner-local TorrServer...", flush=True)
+    work_dir = Path('.aria2-payload').resolve()
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Add torrent to TorrServer (support both magnet link and binary .torrent upload)
-    try:
-        if kind == 'file':
-            boundary = '----ClixArenaBoundary' + uuid.uuid4().hex
-            body = (
-                f'--{boundary}\r\n'
-                f'Content-Disposition: form-data; name="file"; filename="upload.torrent"\r\n'
-                f'Content-Type: application/x-bittorrent\r\n\r\n'
-            ).encode('utf-8') + torrent_raw_bytes + (
-                f'\r\n--{boundary}\r\n'
-                f'Content-Disposition: form-data; name="save"\r\n\r\n'
-                f'true\r\n--{boundary}--\r\n'
-            ).encode('utf-8')
+    print("Launching high-speed aria2c engine...", flush=True)
 
-            req = urllib.request.Request(
-                f'{server}/torrent/upload',
-                data=body,
-                headers={'Content-Type': f'multipart/form-data; boundary={boundary}', 'User-Agent': 'ClixArena'}
-            )
-        else:
-            payload = {
-                'action': 'add',
-                'link': magnet,
-                'title': 'ClixArena Video',
-                'save_to_db': True
-            }
-            req = urllib.request.Request(
-                f'{server}/torrents',
-                data=json.dumps(payload).encode('utf-8'),
-                headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
-            )
-
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            tinfo = json.loads(resp.read().decode('utf-8'))
-    except Exception as e:
-        print(f"::warning::Failed to add torrent to TorrServer ({e})", flush=True)
-        return False
-
-    torr_hash = tinfo.get('hash')
-    if not torr_hash:
-        print("::warning::TorrServer did not return a torrent hash", flush=True)
-        return False
-
-    print(f"TorrServer tracking hash: {torr_hash}. Waiting for metadata & video file list...", flush=True)
-
-    # 2. Poll for file list
-    deadline = time.monotonic() + 300
-    files_list = []
-    title = tinfo.get('title', 'Video')
-    while time.monotonic() < deadline:
-        time.sleep(2)
+    # If we have a .torrent file, parse candidate files using libtorrent or bencode
+    selected_index = None
+    if torrent_file_path:
         try:
-            req_get = urllib.request.Request(
-                f'{server}/torrents',
-                data=json.dumps({'action': 'get', 'hash': torr_hash}).encode('utf-8'),
-                headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
-            )
-            with urllib.request.urlopen(req_get, timeout=10) as r:
-                curr = json.loads(r.read().decode('utf-8'))
-                fl = curr.get('file_stats') or curr.get('files')
-                if fl and len(fl) > 0:
-                    files_list = fl
-                    title = curr.get('title') or title
-                    break
-        except Exception:
-            continue
+            import libtorrent as lt
+            meta = lt.bdecode(torrent_file_path.read_bytes())
+            ti = lt.torrent_info(meta)
+            choices = candidates(ti)
+            if choices:
+                if len(choices) == 1:
+                    selected_index = choices[0]['index']
+                    print(f"Single video found in torrent: '{choices[0]['name']}' (index {selected_index})", flush=True)
+                else:
+                    print(f"Multiple videos found in torrent ({len(choices)} files). Waiting for portal selection...", flush=True)
+                    portal_choices = [{'index': c['index'], 'name': c['name'], 'bytes': c['bytes']} for c in choices]
+                    selected_index = select_file(portal_choices, request)
+                    chosen = next(c for c in choices if c['index'] == selected_index)
+                    print(f"User selected: '{chosen['name']}' (index {selected_index})", flush=True)
+        except Exception as e:
+            print(f"::warning::Failed to pre-select file from .torrent ({e})", flush=True)
 
-    if not files_list:
-        print("::warning::TorrServer metadata discovery timed out.", flush=True)
+    cmd = [
+        cmd_bin,
+        "--seed-time=0",
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--min-split-size=1M",
+        "--file-allocation=none",
+        "--max-overall-upload-limit=1K",
+        "--bt-stop-timeout=180",
+        "--summary-interval=10",
+        "--dir", str(work_dir)
+    ]
+
+    # aria2 file indexing is 1-based, libtorrent is 0-based
+    if selected_index is not None:
+        aria2_idx = selected_index + 1
+        cmd.append(f"--select-file={aria2_idx}")
+
+    if kind == 'file':
+        cmd.extend(["-T", torrent_source])
+    else:
+        cmd.append(torrent_source)
+
+    try:
+        proc = subprocess.run(cmd, timeout=3600)
+        if proc.returncode != 0:
+            print(f"::warning::aria2c exited with code {proc.returncode}. Retrying with libtorrent...", flush=True)
+            return False
+    except subprocess.TimeoutExpired:
+        print("::warning::aria2c download timed out after 60 minutes. Retrying with libtorrent...", flush=True)
+        return False
+    except Exception as e:
+        print(f"::warning::aria2c execution failed ({e}). Retrying with libtorrent...", flush=True)
         return False
 
-    # 3. Filter candidate video files
-    video_exts = {'.mkv', '.mp4', '.webm', '.avi', '.mov', '.m4v', '.ts'}
-    video_choices = []
-    for f in files_list:
-        idx = f.get('id')
-        fname = f.get('path', '')
-        size = f.get('length', 0)
-        ext = Path(fname).suffix.lower()
-        if ext in video_exts and size > 0:
-            clean_name = Path(fname).name
-            video_choices.append({'index': idx, 'name': clean_name, 'bytes': size, 'raw_file': f})
+    # Find the downloaded video file in work_dir
+    found_videos = []
+    for f in work_dir.rglob('*'):
+        if f.is_file() and not f.is_symlink():
+            if f.suffix.lower() in VIDEO and f.stat().st_size > 0:
+                found_videos.append(f)
 
-    if not video_choices:
-        raise TorrentError("Torrent contains no supported video files.")
+    if not found_videos:
+        print("::warning::No video files found in aria2c output directory. Falling back to libtorrent...", flush=True)
+        return False
 
-    # 4. Selection
-    if len(video_choices) == 1:
-        chosen = video_choices[0]
-        print(f"Single video found in torrent: '{chosen['name']}'", flush=True)
-    else:
-        print(f"Multiple videos found in torrent ({len(video_choices)} files). Waiting for portal selection...", flush=True)
-        portal_choices = [{'index': c['index'], 'name': c['name'], 'bytes': c['bytes']} for c in video_choices]
-        sel_idx = select_file(portal_choices, request)
-        chosen = next(c for c in video_choices if c['index'] == sel_idx)
-        print(f"User selected: '{chosen['name']}'", flush=True)
+    # Sort largest first
+    found_videos.sort(key=lambda x: x.stat().st_size, reverse=True)
+    best_file = found_videos[0]
+    file_size = best_file.stat().st_size
 
-    size = chosen['bytes']
-    if size > limit:
+    if file_size > limit:
         raise TorrentError("Selected video exceeds the 12 GB source limit.")
-    if shutil.disk_usage(".").free < size * 2 + 2 * 1024**3:
+    if shutil.disk_usage(".").free < file_size * 2 + 2 * 1024**3:
         raise TorrentError("Not enough runner space for this video and processing. Select a smaller file.")
-
-    file_id = chosen['index']
-    # TorrServer direct streaming URL
-    stream_url = f"{server}/stream/{urllib.parse.quote(chosen['name'])}?link={torr_hash}&index={file_id}&play"
-
-    print(f"Streaming and downloading '{chosen['name']}' ({size / (1024**2):.1f} MB) from local TorrServer engine...", flush=True)
 
     target_path = Path(target)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # 5. Stream data from TorrServer to target file with progress
-    req_dl = urllib.request.Request(stream_url, headers={'User-Agent': 'ClixArena'})
-    try:
-        with urllib.request.urlopen(req_dl, timeout=300) as resp, open(target_path, 'wb') as out_f:
-            copied = 0
-            last_dl_log = time.monotonic()
-            while True:
-                chunk = resp.read(2 * 1024 * 1024)
-                if not chunk:
-                    break
-                out_f.write(chunk)
-                copied += len(chunk)
-                if time.monotonic() - last_dl_log >= 10:
-                    print(f"TorrServer download progress: {min(100.0, copied / size * 100):.1f}% ({copied / (1024**2):.1f} MB)", flush=True)
-                    last_dl_log = time.monotonic()
-
-        if target_path.stat().st_size != size:
-            print("::warning::TorrServer downloaded file size mismatch. Retrying with libtorrent...", flush=True)
-            return False
-
-        print("TorrServer download successfully completed!", flush=True)
-
-        # 6. Cleanup torrent from TorrServer memory/disk
-        try:
-            req_rem = urllib.request.Request(
-                f'{server}/torrents',
-                data=json.dumps({'action': 'rem', 'hash': torr_hash}).encode('utf-8'),
-                headers={'Content-Type': 'application/json', 'User-Agent': 'ClixArena'}
-            )
-            urllib.request.urlopen(req_rem, timeout=5)
-        except Exception:
-            pass
-
-        return True
-
-    except Exception as e:
-        print(f"::warning::TorrServer stream download failed ({e}). Falling back to libtorrent...", flush=True)
-        return False
+    shutil.move(str(best_file), str(target_path))
+    shutil.rmtree(work_dir, ignore_errors=True)
+    print(f"aria2c download successfully completed: {target_path.name} ({file_size / (1024**2):.1f} MB)", flush=True)
+    return True
 
 
 def download_torrent(descriptor,target,limit,root,request):
-    # 1. PRIMARY: Try Runner-local TorrServer engine (Ultra-fast 2.5GB RAM cache, multi-peer DHT streaming)
+    # 1. PRIMARY: Try high-speed aria2c engine (16-split multi-connection)
     try:
-        if download_via_torrserver(descriptor, target, limit, root, request):
+        if download_via_aria2(descriptor, target, limit, root, request):
             return target
     except Exception as e:
-        print(f"::warning::TorrServer resolver exception: {e}. Falling back to cloud resolver...", flush=True)
+        print(f"::warning::aria2c resolver exception: {e}. Falling back to cloud resolver...", flush=True)
 
     # 2. SECONDARY: Try Seedr cloud caching fallback
     try:
