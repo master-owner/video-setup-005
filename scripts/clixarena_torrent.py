@@ -523,10 +523,11 @@ def start_runner_torrserver():
                                 "CacheSize": 2684354560,       # 2.5 GB RAM Cache (Ultra-Fast in-memory buffering)
                                 "ReaderReadAHead": 95,          # 95% aggressive pre-buffer
                                 "PreloadCache": 15,
-                                "ConnectionsLimit": 350,        # connect to up to 350 peers simultaneously
-                                "DhtConnectionLimit": 800,
+                                "ConnectionsLimit": 600,        # connect to up to 600 peers simultaneously
+                                "DhtConnectionLimit": 1200,
                                 "PeersListenPort": 0,
-                                "ResponsiveMode": True
+                                "ResponsiveMode": True,
+                                "TorrentDisconnectTimeout": 30
                             }
                         }
                         req_cfg = urllib.request.Request(
@@ -593,9 +594,15 @@ def download_via_torrserver(descriptor, target, limit, root, request):
                 headers={'Content-Type': f'multipart/form-data; boundary={boundary}', 'User-Agent': 'ClixArena'}
             )
         else:
+            # Auto-inject top global trackers into magnet link for maximum peer connectivity
+            injected_magnet = magnet
+            for trk in FALLBACK_TRACKERS:
+                qtrk = urllib.parse.quote(trk)
+                if qtrk not in injected_magnet and trk not in injected_magnet:
+                    injected_magnet += f"&tr={qtrk}"
             payload = {
                 'action': 'add',
-                'link': magnet,
+                'link': injected_magnet,
                 'title': 'ClixArena Video',
                 'save_to_db': True
             }
@@ -692,7 +699,7 @@ def download_via_torrserver(descriptor, target, limit, root, request):
             copied = 0
             last_dl_log = time.monotonic()
             while True:
-                chunk = resp.read(2 * 1024 * 1024)
+                chunk = resp.read(8 * 1024 * 1024)
                 if not chunk:
                     break
                 out_f.write(chunk)
