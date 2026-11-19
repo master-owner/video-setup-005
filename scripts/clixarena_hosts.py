@@ -6,6 +6,9 @@ import os, json, re, subprocess, time, urllib.parse, urllib.request, urllib.erro
 from clixarena_upload_metrics import run_upload, file_size
 from vk_uploader import VKUploader
 
+class HostError(Exception):
+    pass
+
 SUPPORTED_HOSTS = ('vk',)
 
 def get_embed_url(provider, file_id, access_hash=""):
