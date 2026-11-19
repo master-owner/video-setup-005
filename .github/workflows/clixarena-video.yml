@@ -377,6 +377,12 @@ jobs:
     if: ${{ success() && needs.encode.outputs.distributed == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    permissions:
+      contents: write
+      pull-requests: none
+      issues: none
+      packages: none
+      id-token: none
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
