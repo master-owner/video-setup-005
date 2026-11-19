@@ -30,7 +30,7 @@ def settings():
     quality = os.getenv('QUALITY', '720p - Balanced')
     choices = {f'{label} - {tier}': (height, crf) for label,height in [('Original',None)]+[(str(h)+'p',h) for h in (360,480,720,1080,1440,2160)] for tier,crf in [('High',18),('Balanced',23)]}
     layout = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
-    upload_host = layout.get('uploadHost', 'abyss')
+    upload_host = layout.get('uploadHost', 'vk')
     
     # No host-specific resolution lock
 

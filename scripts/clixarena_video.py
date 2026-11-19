@@ -30,8 +30,7 @@ from clixarena_features import (settings, subtitle_asset, audio_selection, fetch
 from clixarena_torrent import TorrentError, download_torrent
 from clixarena_parallel import parallel_download
 from clixarena_hosts import (HostError, selected_host, selected_hosts, merge_provider_mapping,
-                             upload_abyss, verify_abyss,
-                             upload_byse, verify_byse)
+                             upload_vk, verify_vk)
 
 def download_source(url,target,limit,root):
     descriptor=json.loads(os.getenv('OVERLAY_LAYOUT','') or '{}').get('torrent')
@@ -713,7 +712,7 @@ def external_subtitle_mapping(root=None):
     return {'subtitle_url': url, 'subtitle_language': asset['language'], 'subtitle_format': 'srt'}
 
 
-def merge_mapping(rows, identity, file_id, provider='abyss', quality_ids=None):
+def merge_mapping(rows, identity, file_id, provider='vk', quality_ids=None):
     return merge_provider_mapping(rows,identity,file_id,provider,quality_ids=quality_ids)
 
 
@@ -752,7 +751,7 @@ def decrypt_mappings(document):
     return rows
 
 
-def save_mapping(file_id,provider='abyss',quality_ids=None):
+def save_mapping(file_id,provider='vk',quality_ids=None):
     identity = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}').get('mapping')
     if identity is None:
         return
@@ -769,7 +768,10 @@ def save_mapping(file_id,provider='abyss',quality_ids=None):
     identity = dict(identity, **external_subtitle_mapping())
     backup = Path(os.environ.get('GITHUB_WORKSPACE', '.')) / 'mapping-result.json'
     receipt_rows=decrypt_mappings(json.loads(backup.read_text(encoding='utf-8'))) if backup.is_file() else []
-    backup.write_text(json.dumps(encrypt_mappings(merge_mapping(receipt_rows,identity,file_id,provider,quality_ids=quality_ids)), indent=2) + '\n', encoding='utf-8')
+    access_hash = quality_ids.get('access_hash', '') if isinstance(quality_ids, dict) else ''
+    owner_id = quality_ids.get('owner_id', '') if isinstance(quality_ids, dict) else ''
+    video_id = quality_ids.get('video_id', '') if isinstance(quality_ids, dict) else ''
+    backup.write_text(json.dumps(encrypt_mappings(merge_mapping(receipt_rows,identity,file_id,provider,access_hash=access_hash,owner_id=owner_id,video_id=video_id)), indent=2) + '\n', encoding='utf-8')
     repo = os.getenv('GITHUB_REPOSITORY', '')
     token = os.getenv('MAPPING_GITHUB_TOKEN', '')
     ref = os.getenv('GITHUB_REF_NAME', '')
@@ -791,7 +793,7 @@ def save_mapping(file_id,provider='abyss',quality_ids=None):
                 if error.code != 404:
                     raise
                 current, rows = None, []
-            merged = merge_mapping(rows, identity, file_id,provider,quality_ids=quality_ids)
+            merged = merge_mapping(rows, identity, file_id, provider, access_hash=access_hash, owner_id=owner_id, video_id=video_id)
             content = json.dumps(encrypt_mappings(merged), indent=2) + '\n'
             backup.write_text(content, encoding='utf-8')
             if rows == merged and current and not isinstance(document, list):
@@ -815,17 +817,11 @@ _UPLOAD_VERIFIER = ContextVar('upload_verifier', default=None)
 
 
 def finish_provider_upload(provider, file_id, key, size, output_name):
-    if provider == 'byse':
-        label = 'Byse'
-        verify = verify_byse
-    else:
-        label = 'Abyss'
-        verify = verify_abyss
-    verified, named = timed_call(label + ' metadata verification', verify, file_id, key, size, output_name)
+    label = 'VK Video'
+    verify = verify_vk
+    verified, named = timed_call(label + ' metadata verification', verify, file_id, key)
     if not verified:
         print('::warning::' + label + ' upload accepted; metadata verification is pending. Check the host manager before uploading again.', flush=True)
-    elif not named:
-        print('::warning::' + label + ' upload verified, but the stored filename differs. Check the host manager; do not upload again.', flush=True)
     print(label + ' upload complete. Playback processing may still be pending.', flush=True)
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -848,44 +844,37 @@ def generate_random_server_name(length=25, ext='.mp4'):
 
 def complete_upload(path, output_name, values):
     layout_now = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
-    target_hosts = selected_hosts(layout_now)
-    print(f'Selected upload targets: {target_hosts}', flush=True)
-    primary_host = target_hosts[0]
+    print('Starting VK Video Upload...', flush=True)
 
-    for host in target_hosts:
-        server_name = generate_random_server_name(25, '.mp4')
-        label = 'Byse' if host == 'byse' else 'Abyss'
-        print(f'Uploading video to {label} with protected server name: {server_name}', flush=True)
-        try:
-            if host == 'byse':
-                api_key = values.get('BYSE_API_KEY') or os.getenv('BYSE_API_KEY', '') or values.get('FILEMOON_API_KEY') or os.getenv('FILEMOON_API_KEY', '')
-                file_id = upload_byse(path, server_name, api_key, mask)
-            else:
-                api_key = values.get('ABYSS_API_KEY') or os.getenv('ABYSS_API_KEY', '')
-                file_id = upload_abyss(path, server_name, api_key, mask)
-        except Exception as e:
-            raise DownloadError(f'{label} upload failed: {e}. Check host manager before uploading again; no automatic retry.') from None
-        print(f'{label} upload accepted with file ID: {file_id}', flush=True)
+    token = values.get('VK_ACCESS_TOKEN') or os.getenv('VK_ACCESS_TOKEN', '')
+    group_id = values.get('VK_GROUP_ID') or os.getenv('VK_GROUP_ID', '')
+    
+    try:
+        vk_result = upload_vk(path, output_name, access_token=token, group_id=group_id, mask=mask)
+        file_id = vk_result['full_id']
+    except Exception as e:
+        raise DownloadError(f'VK Video upload failed: {e}. Check VK credentials before uploading again.') from None
 
-        try:
-            timed_call(f'{label} mapping save', save_mapping, file_id, host)
-            print(f'{label} mapping saved successfully.', flush=True)
-        except Exception as e:
-            print(f'::warning::{label} upload accepted, but mapping save threw error: {e}. Check artifact mapping-result.json; continuing to next host.', flush=True)
+    print(f'VK Video upload accepted with ID: {file_id}', flush=True)
 
-        verify_accepted_upload(host, file_id, api_key, path.stat().st_size, server_name)
-        print(f'{label} upload completed successfully.', flush=True)
+    try:
+        timed_call('VK Video mapping save', save_mapping, file_id, 'vk', quality_ids=vk_result)
+        print('VK Video mapping saved successfully.', flush=True)
+    except Exception as e:
+        print(f'::warning::VK Video upload accepted, but mapping save threw error: {e}. Check artifact mapping-result.json;', flush=True)
+
+    verify_accepted_upload('vk', file_id, token, path.stat().st_size, output_name)
+    print('VK Video upload completed successfully.', flush=True)
 
     if os.getenv('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as file:
-            file.write(f'upload_verified=true\nupload_host={primary_host}\n')
+            file.write('upload_verified=true\nupload_host=vk\n')
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
-            hosts_str = ', '.join(('Byse' if h == 'byse' else 'Abyss') for h in target_hosts)
-            file.write(f'### Upload verified for {hosts_str}\nUpload accepted and mapping saved.\n')
+            file.write('### Upload verified for VK Video\nUpload accepted and mapping saved to mappings.json.\n')
 
 
-def complete_upload_one(path, output_name, values, provider='abyss'):
+def complete_upload_one(path, output_name, values, provider='vk'):
     return complete_upload(path, output_name, values)
 
 def selected_runner_mode(layout,environment=None):
@@ -904,7 +893,7 @@ def main():
     print('CLIXARENA pipeline version 2026.10.20-parallel-preparation', flush=True)
     try:
         values = {name: os.getenv(name, '') for name in
-                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'ABYSS_API_KEY', 'BYSE_API_KEY', 'FILEMOON_API_KEY')}
+                  ('VIDEO_URL', 'SUBTITLE_PATH', 'FONT_PATH', 'VK_ACCESS_TOKEN', 'VK_GROUP_ID')}
         sample_only = os.getenv('SAMPLE_ONLY', 'false').lower() == 'true'
         method = os.getenv('SUBTITLE_METHOD', 'burn')
         if method not in ('burn', 'soft', 'transfer'):
@@ -940,15 +929,9 @@ def main():
             required = tuple(name for name in required if name != 'FONT_PATH')
         if method == 'transfer':
             required = ('VIDEO_URL',)
-        required = tuple(n for n in required if n not in ('ABYSS_API_KEY', 'BYSE_API_KEY', 'FILEMOON_API_KEY'))
+        required = tuple(n for n in required if n not in ('VK_ACCESS_TOKEN', 'VK_GROUP_ID'))
         if not sample_only:
-            layout_check = json.loads(os.getenv('OVERLAY_LAYOUT', '') or '{}')
-            all_targets = selected_hosts(layout_check)
-            if 'abyss' in all_targets:
-                required += ('ABYSS_API_KEY',)
-            if 'byse' in all_targets:
-                if not (values.get('BYSE_API_KEY') or values.get('FILEMOON_API_KEY')):
-                    required += ('BYSE_API_KEY',)
+            required += ('VK_ACCESS_TOKEN',)
         missing = [name for name in required if not values[name].strip()]
         if missing:
             print('::error::Missing required configuration: ' + ', '.join(missing) +
@@ -997,7 +980,7 @@ def main():
                         raise DownloadError('Prepared MP4 has unexpected container or codecs; upload stopped.')
                     if abs(duration - float(output['format']['duration'])) > 2:
                         raise DownloadError('Prepared MP4 duration differs from the source; upload stopped.')
-                    stage = 'Abyss MP4 upload'
+                    stage = 'VK MP4 upload'
                     complete_upload(Path('clixarena.mp4'), output_name, values)
                 finally:
                     os.chdir(original)

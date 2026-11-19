@@ -320,9 +320,8 @@ def merge():
         shutil.copyfile('clixarena.mp4',preview/'sample.mp4')
         return
     values = {
-        'ABYSS_API_KEY': os.getenv('ABYSS_API_KEY', ''),
-        'BYSE_API_KEY': os.getenv('BYSE_API_KEY', '') or os.getenv('FILEMOON_API_KEY', ''),
-        'FILEMOON_API_KEY': os.getenv('BYSE_API_KEY', '') or os.getenv('FILEMOON_API_KEY', '')
+        'VK_ACCESS_TOKEN': os.getenv('VK_ACCESS_TOKEN', ''),
+        'VK_GROUP_ID': os.getenv('VK_GROUP_ID', '')
     }
     for value in values.values(): mask(value)
     complete_upload(Path('clixarena.mp4'),output_filename(os.getenv('OUTPUT_NAME','CLIXARENA.mp4')),values)
